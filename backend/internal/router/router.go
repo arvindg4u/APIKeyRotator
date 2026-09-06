@@ -42,6 +42,11 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 		c.Next()
 	})
 
+	// 健康检查 - 用于 Render / Docker / 负载均衡器探针
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
 	// 静态文件服务 - 为前端提供静态资源
 	r.StaticFile("/", "./static/index.html")
 	r.Static("/assets", "./static/assets")

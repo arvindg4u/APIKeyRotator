@@ -1,0 +1,31 @@
+# Render Blueprint for API Key Rotator (lightweight: SQLite + memory cache)
+# Usage: push this repo to GitHub, then in Render Dashboard ->
+# New + -> Blueprint -> select this repo. Fill the secrets when prompted.
+services:
+  - type: web
+    name: api-key-rotator
+    runtime: docker
+    dockerfilePath: ./Dockerfile.render
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: rotator-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GLOBAL_PROXY_KEYS
+        generateValue: true
+      - key: LOG_LEVEL
+        value: info
+      - key: PROXY_TIMEOUT
+        value: 30
+      # Render injects PORT automatically; app listens on it (BACKEND_PORT optional override).
+      # Set this to your public URL AFTER first deploy (Dashboard -> Settings -> update).
+      - key: PROXY_PUBLIC_BASE_URL
+        value: https://api-key-rotator.onrender.com

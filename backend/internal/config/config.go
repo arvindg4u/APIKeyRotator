@@ -75,7 +75,7 @@ func Load() *Config {
 		RedisHost:          getEnv("REDIS_HOST", "localhost"),
 		RedisPort:          getEnvAsInt("REDIS_PORT", 6379),
 		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
-		Port:               getEnv("BACKEND_PORT", "8000"),
+		Port:               getServerPort(),
 		JWTSecret:          getEnv("JWT_SECRET", "your-secret-key"),
 		AdminUsername:      adminUsername,
 		AdminPassword:      getEnv("ADMIN_PASSWORD", "admin123"),
@@ -87,6 +87,16 @@ func Load() *Config {
 	}
 
 	return config
+}
+
+// getServerPort resolves the listen port.
+// BACKEND_PORT wins when set; otherwise fall back to PORT (Render/Heroku-style
+// platforms inject it), defaulting to 8000 for local runs.
+func getServerPort() string {
+	if value := os.Getenv("BACKEND_PORT"); value != "" {
+		return value
+	}
+	return getEnv("PORT", "8000")
 }
 
 // buildDatabaseURL 构建数据库连接字符串
