@@ -90,13 +90,14 @@ func Load() *Config {
 }
 
 // getServerPort resolves the listen port.
-// BACKEND_PORT wins when set; otherwise fall back to PORT (Render/Heroku-style
-// platforms inject it), defaulting to 8000 for local runs.
+// PORT wins when set (Render/Heroku/Fly inject it; the root Dockerfile also
+// bakes BACKEND_PORT=8000, which must not override the platform port).
+// Otherwise BACKEND_PORT applies, defaulting to 8000 for local runs.
 func getServerPort() string {
-	if value := os.Getenv("BACKEND_PORT"); value != "" {
+	if value := os.Getenv("PORT"); value != "" {
 		return value
 	}
-	return getEnv("PORT", "8000")
+	return getEnv("BACKEND_PORT", "8000")
 }
 
 // buildDatabaseURL 构建数据库连接字符串
