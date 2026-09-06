@@ -31,17 +31,27 @@ RUN pnpm install
 COPY frontend/ ./
 RUN pnpm run build
 
+# ---- Stage 2b: Litestream (SQLite -> R2 replication) ----
+FROM alpine:3.22.0 AS litestream-downloader
+RUN apk add --no-cache ca-certificates curl tar && \
+    curl -fsSL -o /tmp/litestream.tar.gz \
+      https://github.com/benbjohnson/litestream/releases/download/v0.5.17/litestream-v0.5.17-linux-amd64-static.tar.gz && \
+    tar -C /usr/local/bin -xzf /tmp/litestream.tar.gz && \
+    rm /tmp/litestream.tar.gz
+
 # ---- Stage 3: Final Image ----
 FROM alpine:3.22.0
 
-RUN apk add --no-cache ca-certificates tzdata sqlite
+RUN apk add --no-cache ca-certificates tzdata sqlite wget
 
 WORKDIR /app
 
 COPY --from=backend-builder /app/backend/api-key-rotator ./
 COPY --from=frontend-builder /app/frontend/dist ./static
+COPY --from=litestream-downloader /usr/local/bin/litestream /usr/local/bin/litestream
+COPY entrypoint.sh ./entrypoint.sh
 
-RUN mkdir -p /app/data /var/data && chmod +x ./api-key-rotator
+RUN mkdir -p /app/data /var/data && chmod +x ./api-key-rotator ./entrypoint.sh
 
 EXPOSE 10000
 
@@ -54,4 +64,6 @@ ENV DB_TYPE=sqlite \
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-10000}/health || exit 1
 
-CMD ["./api-key-rotator"]
+# entrypoint.sh runs the app directly, or under Litestream (-> R2)
+# when R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set.
+CMD ["./entrypoint.sh"]

@@ -23,6 +23,11 @@ func NewSQLiteRepository(databasePath string) (*Repository, error) {
 		return nil, fmt.Errorf("failed to connect to SQLite database at %s: %w", databasePath, err)
 	}
 
+	// WAL模式是 Litestream 持续复制到 R2 的前提；回滚日志模式下复制不可靠
+	if err := db.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
+		return nil, fmt.Errorf("failed to enable WAL mode on SQLite database at %s: %w", databasePath, err)
+	}
+
 	return &Repository{db: db}, nil
 }
 

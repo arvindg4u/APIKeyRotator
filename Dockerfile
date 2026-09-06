@@ -41,6 +41,14 @@ RUN pnpm install
 COPY frontend/ ./
 RUN pnpm run build
 
+# ---- Stage 2b: Litestream (SQLite -> R2 replication) ----
+FROM alpine:3.22.0 AS litestream-downloader
+RUN apk add --no-cache ca-certificates curl tar && \
+    curl -fsSL -o /tmp/litestream.tar.gz \
+      https://github.com/benbjohnson/litestream/releases/download/v0.5.17/litestream-v0.5.17-linux-amd64-static.tar.gz && \
+    tar -C /usr/local/bin -xzf /tmp/litestream.tar.gz && \
+    rm /tmp/litestream.tar.gz
+
 # ---- Stage 3: Final Image ----
 FROM alpine:3.22.0
 
@@ -57,6 +65,10 @@ COPY --from=backend-builder /app/backend/api-key-rotator ./
 
 # 复制前端构建文件
 COPY --from=frontend-builder /app/frontend/dist ./static
+
+# Litestream 二进制 + 启动脚本（R2 未配置时行为与之前一致）
+COPY --from=litestream-downloader /usr/local/bin/litestream /usr/local/bin/litestream
+COPY entrypoint.sh /app/entrypoint.sh
 
 # 创建数据目录并设置权限
 RUN mkdir -p /app/data && \
@@ -89,17 +101,9 @@ RUN touch /app/data/api_key_rotator.db && \
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ./api-key-rotator --health-check || exit 1
 
-# 创建启动脚本来确保权限正确
-RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
-    echo 'echo "Setting up database permissions..."' >> /app/entrypoint.sh && \
-    echo 'if [ -f "/app/data/api_key_rotator.db" ]; then' >> /app/entrypoint.sh && \
-    echo '  chmod 664 /app/data/api_key_rotator.db' >> /app/entrypoint.sh && \
-    echo '  echo "Database file permissions updated"' >> /app/entrypoint.sh && \
-    echo 'else' >> /app/entrypoint.sh && \
-    echo '  echo "Database file not found, will be created automatically"' >> /app/entrypoint.sh && \
-    echo 'fi' >> /app/entrypoint.sh && \
-    echo 'exec ./api-key-rotator "$@"' >> /app/entrypoint.sh && \
-    chmod +x /app/entrypoint.sh
+# 设置入口脚本权限（entrypoint.sh 由仓库提供：
+# R2 未配置时与之前的行为一致，配置时则经 Litestream 启动）
+RUN chmod +x /app/entrypoint.sh
 
 # 启动应用
 CMD ["/app/entrypoint.sh"]

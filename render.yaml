@@ -29,3 +29,14 @@ services:
       # Set this to your public URL AFTER first deploy (Dashboard -> Settings -> update).
       - key: PROXY_PUBLIC_BASE_URL
         value: https://api-key-rotator.onrender.com
+      # --- Litestream SQLite -> R2 persistence ---
+      # Set these in the Dashboard (or API); sync:false keeps Blueprint
+      # deploys from overwriting them. Secrets stay out of git.
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        value: old-union-entire
+      - key: R2_ENDPOINT
+        value: https://575e29bc16ae64a8ce64c6cf4d5c2d52.r2.cloudflarestorage.com
