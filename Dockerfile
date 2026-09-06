@@ -88,11 +88,11 @@ ENV BACKEND_PORT=8000 \
     DATABASE_PATH=/app/data/api_key_rotator.db \
     LOG_LEVEL=info
 
-# 在切换用户前创建数据库文件并设置权限
-RUN touch /app/data/api_key_rotator.db && \
-    chown -R apikeyrotator:apikeyrotator /app/data && \
-    chmod -R 755 /app/data && \
-    chmod 664 /app/data/api_key_rotator.db
+# 数据库目录权限（注意：此处绝不能 touch 空 db 文件——
+# 否则 Litestream 的 restore-if-db-not-exists 会误判为已有数据，
+# 空库会把 R2 上的备份覆盖掉；见 2026-09-06 教训）
+RUN chown -R apikeyrotator:apikeyrotator /app/data && \
+    chmod -R 755 /app/data
 
 # 切换到非特权用户 - 注释掉以避免权限问题
 # USER apikeyrotator

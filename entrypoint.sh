@@ -27,6 +27,15 @@ dbs:
       sync-interval: 10s
 EOF
 	chmod 600 /etc/litestream.yml
+	# 空 DB 文件（如镜像中 baked 的）也视为缺失：否则复刻会把空库
+	# 推上 R2 覆盖备份（2026-09-06 教训）。先删掉再显式 restore。
+	if [ ! -s "$DB_PATH" ]; then
+		rm -f "$DB_PATH" "$DB_PATH-wal" "$DB_PATH-shm" "$DB_PATH-journal"
+		echo "No local database, restoring from R2 replica if it exists..."
+		litestream restore -config /etc/litestream.yml -if-replica-exists -o "$DB_PATH" "$DB_PATH" || true
+	else
+		echo "Local database exists, skipping restore"
+	fi
 	exec litestream replicate -config /etc/litestream.yml -exec "/app/api-key-rotator"
 else
 	echo "R2 vars not set, running without Litestream backup"
