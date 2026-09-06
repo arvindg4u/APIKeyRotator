@@ -123,12 +123,20 @@ func (a *OpenAIAdapter) ProcessRequest() (*services.TargetRequest, error) {
 	// 从SDK获取的路径，并移除开头可能存在的斜杠
 	actionPath := strings.TrimPrefix(a.action, "/")
 
-	// 只有当base_url以'/v1'结尾，且action_path以'v1/'开头时，才进行去重
-	if strings.HasSuffix(baseURL, "/v1") && strings.HasPrefix(actionPath, "v1/") {
-		actionPath = actionPath[3:] // 从action_path中移除 'v1/'
+	// 去重版本前缀：客户端常把 base 配成 ".../llm/uno-1/v1"，
+	// 而 SDK 又会拼接 "/v1/..."，形成 ".../v1/v1/..."。
+	// base 以 /v1 结尾时，开头的多余 v1/ 段全部去掉。
+	for strings.HasSuffix(baseURL, "/v1") && strings.HasPrefix(actionPath, "v1/") {
+		actionPath = strings.TrimPrefix(actionPath[3:], "/")
+	}
+	if actionPath == "v1" && strings.HasSuffix(baseURL, "/v1") {
+		actionPath = ""
 	}
 
-	finalURL := fmt.Sprintf("%s/%s", baseURL, actionPath)
+	finalURL := baseURL
+	if actionPath != "" {
+		finalURL = fmt.Sprintf("%s/%s", baseURL, actionPath)
+	}
 
 	// 处理查询参数
 	params := make(map[string]string)
