@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"os"
 
 	"api-key-rotator/backend/internal/config"
 	"api-key-rotator/backend/internal/handlers"
@@ -50,6 +51,19 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 	// 静态文件服务 - 为前端提供静态资源
 	r.StaticFile("/", "./static/index.html")
 	r.Static("/assets", "./static/assets")
+
+	// PWA 文件 - service worker 必须从站点根路径提供.
+	// 注册构建产物中实际存在的根级静态文件 (sw.js, manifest, icons 等),
+	// 这样哈希化的 workbox-*.js 文件名也能被自动覆盖.
+	// ./static 不存在时 (如未构建前端就 go run) 静默跳过.
+	if entries, err := os.ReadDir("./static"); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || e.Name() == "index.html" {
+				continue
+			}
+			r.StaticFile("/"+e.Name(), "./static/"+e.Name())
+		}
+	}
 
 	// 添加SPA支持 - 对于非API路径，返回index.html
 	r.NoRoute(func(c *gin.Context) {
