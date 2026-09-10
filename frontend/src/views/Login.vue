@@ -77,5 +77,13 @@ const handleLogin = async () => {
 }
 .login-card {
   width: 400px;
+  max-width: calc(100vw - 32px);
+  margin: 0 16px;
+}
+@media (max-width: 480px) {
+  .login-container {
+    align-items: flex-start;
+    padding-top: 12vh;
+  }
 }
 </style>

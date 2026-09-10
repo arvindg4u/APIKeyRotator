@@ -6,7 +6,7 @@
     </div>
 
     <el-table :data="configs" v-loading="loading" style="width: 100%">
-      <el-table-column prop="id" :label="$t('dashboard.table.id')" width="80" />
+      <el-table-column prop="id" :label="$t('dashboard.table.id')" width="80" class-name="col-hide-mobile" label-class-name="col-hide-mobile" />
       <el-table-column prop="name" :label="$t('dashboard.table.name')" />
       <el-table-column prop="slug" :label="$t('dashboard.table.slug')" />
       <el-table-column prop="config_type" :label="$t('dashboard.table.type')">
@@ -16,7 +16,7 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="$t('dashboard.table.targetUrl')" width="400">
+      <el-table-column :label="$t('dashboard.table.targetUrl')" width="400" class-name="col-hide-mobile" label-class-name="col-hide-mobile">
          <template #default="scope">
           <span class="target-url">{{ scope.row.config_type === 'LLM' ? scope.row.target_base_url : scope.row.target_url }}</span>
         </template>
@@ -52,7 +52,7 @@
     </el-table>
 
     <!-- 创建/编辑对话框 -->
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="50%" @close="resetForm">
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="50%" class="responsive-dialog" @close="resetForm">
       <el-form ref="configFormRef" :model="configForm" :rules="formRules" label-position="top" label-width="auto">
         <el-form-item :label="$t('dashboard.form.type')" prop="config_type">
           <el-radio-group v-model="configForm.config_type" :disabled="isEditMode">
@@ -433,5 +433,29 @@ onMounted(() => {
 }
 .help-icon:hover {
   color: #409eff;
+}
+/* Hide low-value columns on small screens */
+@media (max-width: 768px) {
+  .col-hide-mobile {
+    display: none;
+  }
+  .header-bar {
+    flex-wrap: wrap;
+    row-gap: 12px;
+  }
+  .header-bar h1 {
+    font-size: 1.3rem;
+    margin: 0;
+  }
+  .action-buttons-horizontal {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .action-buttons-horizontal .el-button {
+    margin-left: 0 !important;
+  }
+  .action-buttons-horizontal .el-button + .el-button {
+    margin-top: 4px;
+  }
 }
 </style>

@@ -1,10 +1,10 @@
 <template>
-  <el-dialog v-model="visible" :title="t('keyManager.title', { name: configName })" width="60%" @close="handleClose">
+  <el-dialog v-model="visible" :title="t('keyManager.title', { name: configName })" width="60%" class="responsive-dialog" @close="handleClose">
     
     <!-- 添加新Key的表单 -->
     <el-form :inline="true" :model="newKeyForm" class="add-key-form">
       <el-form-item :label="t('keyManager.newKey')">
-        <el-input v-model="newKeyForm.key_value" :placeholder="t('keyManager.placeholder')" style="width: 400px;"/>
+        <el-input v-model="newKeyForm.key_value" :placeholder="t('keyManager.placeholder')" class="new-key-input"/>
       </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="handleAddNewKey" :loading="addLoading">{{ t('keyManager.add') }}</el-button>
@@ -45,7 +45,7 @@
 
     <!-- Key列表 -->
     <el-table :data="keys" v-loading="loading">
-      <el-table-column prop="id" :label="t('keyManager.table.id')" width="80" />
+      <el-table-column prop="id" :label="t('keyManager.table.id')" width="80" class-name="col-hide-mobile" label-class-name="col-hide-mobile" />
       <el-table-column :label="t('keyManager.table.key')">
         <template #default="scope">
           <span>{{ maskApiKey(scope.row.key_value) }}</span>
@@ -331,5 +331,28 @@ const handleClose = () => {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+.new-key-input {
+  width: 400px;
+  max-width: 100%;
+}
+.add-key-form .el-form-item {
+  margin-right: 12px;
+}
+@media (max-width: 768px) {
+  .col-hide-mobile {
+    display: none;
+  }
+  .add-key-form {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .add-key-form .el-form-item {
+    margin-right: 0;
+  }
+  .new-key-input {
+    width: 100%;
+  }
 }
 </style>
