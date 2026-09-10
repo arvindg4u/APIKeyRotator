@@ -44,8 +44,8 @@
     </el-dialog>
 
     <!-- Key列表 -->
-    <el-table :data="keys" v-loading="loading">
-      <el-table-column prop="id" :label="t('keyManager.table.id')" width="80" class-name="col-hide-mobile" label-class-name="col-hide-mobile" />
+    <el-table :data="keys" v-loading="loading" class="desktop-table">
+      <el-table-column prop="id" :label="t('keyManager.table.id')" width="80" />
       <el-table-column :label="t('keyManager.table.key')">
         <template #default="scope">
           <span>{{ maskApiKey(scope.row.key_value) }}</span>
@@ -69,6 +69,26 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <!-- 移动端卡片布局 (≤768px 显示,桌面表格隐藏) -->
+    <div v-loading="loading" class="mobile-cards">
+      <el-card v-for="key in keys" :key="key.id" class="key-card" shadow="hover">
+        <div class="key-card-top">
+          <span class="key-card-value">{{ maskApiKey(key.key_value) }}</span>
+          <el-switch
+            :model-value="key.is_active"
+            @change="handleStatusChange(key)"
+          />
+        </div>
+        <div class="key-card-actions">
+          <el-popconfirm :title="t('keyManager.deleteConfirm')" @confirm="handleDeleteKey(key.id)">
+            <template #reference>
+              <el-button size="small" type="danger">{{ t('keyManager.delete') }}</el-button>
+            </template>
+          </el-popconfirm>
+        </div>
+      </el-card>
+    </div>
 
   </el-dialog>
 </template>
@@ -339,9 +359,34 @@ const handleClose = () => {
 .add-key-form .el-form-item {
   margin-right: 12px;
 }
+.mobile-cards {
+  display: none;
+}
+/* Mobile: replace the keys table with stacked cards */
 @media (max-width: 768px) {
-  .col-hide-mobile {
+  .desktop-table {
     display: none;
+  }
+  .mobile-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .key-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .key-card-value {
+    font-family: monospace;
+    font-size: 14px;
+    word-break: break-all;
+  }
+  .key-card-actions {
+    display: flex;
+    justify-content: flex-end;
   }
   .add-key-form {
     display: flex;

@@ -5,8 +5,8 @@
       <el-button type="primary" @click="openCreateDialog">{{ $t('dashboard.createButton') }}</el-button>
     </div>
 
-    <el-table :data="configs" v-loading="loading" style="width: 100%">
-      <el-table-column prop="id" :label="$t('dashboard.table.id')" width="80" class-name="col-hide-mobile" label-class-name="col-hide-mobile" />
+    <el-table :data="configs" v-loading="loading" style="width: 100%" class="desktop-table">
+      <el-table-column prop="id" :label="$t('dashboard.table.id')" width="80" />
       <el-table-column prop="name" :label="$t('dashboard.table.name')" />
       <el-table-column prop="slug" :label="$t('dashboard.table.slug')" />
       <el-table-column prop="config_type" :label="$t('dashboard.table.type')">
@@ -16,7 +16,7 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="$t('dashboard.table.targetUrl')" width="400" class-name="col-hide-mobile" label-class-name="col-hide-mobile">
+      <el-table-column :label="$t('dashboard.table.targetUrl')" width="400">
          <template #default="scope">
           <span class="target-url">{{ scope.row.config_type === 'LLM' ? scope.row.target_base_url : scope.row.target_url }}</span>
         </template>
@@ -50,6 +50,38 @@
          </template>
        </el-table-column>
     </el-table>
+
+    <!-- 移动端卡片布局 (≤768px 显示,桌面表格隐藏) -->
+    <div v-loading="loading" class="mobile-cards">
+      <el-card v-for="config in configs" :key="config.id" class="config-card" shadow="hover">
+        <div class="config-card-head">
+          <span class="config-card-name">{{ config.name }}</span>
+          <el-tag :type="config.config_type === 'LLM' ? 'success' : 'primary'" size="small">
+            {{ config.config_type }}
+          </el-tag>
+        </div>
+        <div class="config-card-slug">{{ config.slug }}</div>
+        <div class="config-card-url">{{ config.config_type === 'LLM' ? config.target_base_url : config.target_url }}</div>
+        <div class="config-card-foot">
+          <el-popconfirm
+            :title="config.is_active ? $t('dashboard.disableConfirm') : $t('dashboard.enableConfirm')"
+            width="220"
+            @confirm="handleStatusChange(config)"
+          >
+            <template #reference>
+              <div @click.stop.prevent>
+                <el-switch :model-value="config.is_active" />
+              </div>
+            </template>
+          </el-popconfirm>
+          <div class="config-card-actions">
+            <el-button size="small" type="primary" @click="handleCopy(config)">{{ $t('dashboard.actions.copy') }}</el-button>
+            <el-button size="small" @click="handleEdit(config)">{{ $t('dashboard.actions.edit') }}</el-button>
+            <el-button size="small" type="primary" @click="openKeyManager(config)">{{ $t('dashboard.actions.manageKeys') }}</el-button>
+          </div>
+        </div>
+      </el-card>
+    </div>
 
     <!-- 创建/编辑对话框 -->
     <el-dialog v-model="dialogVisible" :title="dialogTitle" width="50%" class="responsive-dialog" @close="resetForm">
@@ -434,10 +466,59 @@ onMounted(() => {
 .help-icon:hover {
   color: #409eff;
 }
-/* Hide low-value columns on small screens */
+.mobile-cards {
+  display: none;
+}
+/* Mobile: replace the wide table with stacked cards */
 @media (max-width: 768px) {
-  .col-hide-mobile {
+  .desktop-table {
     display: none;
+  }
+  .mobile-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .config-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .config-card-name {
+    font-weight: 600;
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .config-card-slug {
+    color: #909399;
+    font-size: 13px;
+    margin-bottom: 4px;
+    word-break: break-all;
+  }
+  .config-card-url {
+    color: #606266;
+    font-size: 13px;
+    word-break: break-all;
+    margin-bottom: 12px;
+  }
+  .config-card-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+  .config-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .config-card-actions .el-button {
+    margin-left: 0 !important;
   }
   .header-bar {
     flex-wrap: wrap;
