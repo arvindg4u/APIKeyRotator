@@ -17,8 +17,15 @@ type UniversalRequest struct {
 
 // UniversalMessage represents a single message in a conversation
 type UniversalMessage struct {
-	Role    string `json:"role"`    // "system", "user", "assistant"
-	Content string `json:"content"` // Text content
+	Role    string          `json:"role"`    // "system", "user", "assistant"
+	Content string          `json:"content"` // Text content
+	Audio   *UniversalAudio `json:"audio,omitempty"`
+}
+
+// UniversalAudio carries base64-encoded audio attached to a message
+type UniversalAudio struct {
+	Data   string `json:"data"`   // base64-encoded audio bytes
+	Format string `json:"format"` // e.g. "wav", "mp3"
 }
 
 // UniversalResponse represents a chat completion response in a format-agnostic way

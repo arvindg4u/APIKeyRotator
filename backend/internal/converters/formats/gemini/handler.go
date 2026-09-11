@@ -3,6 +3,7 @@ package gemini
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"api-key-rotator/backend/internal/converters/formats"
 )
@@ -31,7 +32,14 @@ type RequestContent struct {
 }
 
 type Part struct {
-	Text string `json:"text"`
+	Text       string      `json:"text,omitempty"`
+	InlineData *InlineData `json:"inlineData,omitempty"`
+}
+
+// InlineData carries base64-encoded media (e.g. audio) in a Gemini part.
+type InlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 type GenerationConfig struct {
@@ -85,12 +93,20 @@ func (h *Handler) ParseRequest(body []byte) (*formats.UniversalRequest, error) {
 			role = "assistant"
 		}
 		var text string
+		var audio *formats.UniversalAudio
 		for _, part := range content.Parts {
 			text += part.Text
+			if part.InlineData != nil && audio == nil {
+				audio = &formats.UniversalAudio{
+					Data:   part.InlineData.Data,
+					Format: mimeToAudioFormat(part.InlineData.MimeType),
+				}
+			}
 		}
 		universal.Messages = append(universal.Messages, formats.UniversalMessage{
 			Role:    role,
 			Content: text,
+			Audio:   audio,
 		})
 	}
 
@@ -121,9 +137,22 @@ func (h *Handler) BuildRequest(req *formats.UniversalRequest) ([]byte, error) {
 		if role == "assistant" {
 			role = "model"
 		}
+		parts := make([]Part, 0, 2)
+		if msg.Audio == nil {
+			// Text-only: preserve the historical single-text-part shape.
+			parts = append(parts, Part{Text: msg.Content})
+		} else {
+			if msg.Content != "" {
+				parts = append(parts, Part{Text: msg.Content})
+			}
+			parts = append(parts, Part{InlineData: &InlineData{
+				MimeType: "audio/" + strings.ToLower(msg.Audio.Format),
+				Data:     msg.Audio.Data,
+			}})
+		}
 		geminiReq.Contents = append(geminiReq.Contents, RequestContent{
 			Role:  role,
-			Parts: []Part{{Text: msg.Content}},
+			Parts: parts,
 		})
 	}
 
@@ -215,6 +244,21 @@ func (h *Handler) GetAPIPath(action string) string {
 // GetClientAction implements FormatHandler
 func (h *Handler) GetClientAction(apiPath string) string {
 	return "chat/completions"
+}
+
+// mimeToAudioFormat maps a mime type like "audio/wav" back to the short
+// audio format ("wav"). Best-effort: unknown shapes pass through lowercased.
+func mimeToAudioFormat(mime string) string {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	if rest, ok := strings.CutPrefix(mime, "audio/"); ok {
+		if i := strings.IndexByte(rest, ';'); i >= 0 {
+			rest = rest[:i]
+		}
+		if rest != "" {
+			return rest
+		}
+	}
+	return mime
 }
 
 func mapGeminiFinishReason(reason string) string {

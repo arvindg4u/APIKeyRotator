@@ -31,8 +31,72 @@ type Request struct {
 }
 
 type RequestMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+// contentPart is one element of an array-shaped message content.
+type contentPart struct {
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	InputAudio *struct {
+		Data   string `json:"data"`
+		Format string `json:"format"`
+	} `json:"input_audio,omitempty"`
+}
+
+// parseContent decodes a message content that may be either a plain string
+// or an array of text/input_audio parts (OpenAI chat completion shape).
+// It returns the concatenated text and the first input_audio payload, if any.
+func parseContent(raw json.RawMessage) (string, *formats.UniversalAudio, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, nil, nil
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", nil, fmt.Errorf("message content must be a string or content-part array: %w", err)
+	}
+	var text string
+	var audio *formats.UniversalAudio
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			text += p.Text
+		case "input_audio":
+			if p.InputAudio != nil && audio == nil {
+				audio = &formats.UniversalAudio{
+					Data:   p.InputAudio.Data,
+					Format: p.InputAudio.Format,
+				}
+			}
+		}
+	}
+	return text, audio, nil
+}
+
+// buildContent encodes text (+ optional audio) back into OpenAI content
+// shape: plain string when there is no audio (backward compat), otherwise
+// an array of [text?, input_audio] parts.
+func buildContent(text string, audio *formats.UniversalAudio) (json.RawMessage, error) {
+	if audio == nil {
+		return json.Marshal(text)
+	}
+	parts := make([]contentPart, 0, 2)
+	if text != "" {
+		parts = append(parts, contentPart{Type: "text", Text: text})
+	}
+	parts = append(parts, contentPart{
+		Type: "input_audio",
+		InputAudio: &struct {
+			Data   string `json:"data"`
+			Format string `json:"format"`
+		}{Data: audio.Data, Format: audio.Format},
+	})
+	return json.Marshal(parts)
 }
 
 // Response types
@@ -83,12 +147,17 @@ func (h *Handler) ParseRequest(body []byte) (*formats.UniversalRequest, error) {
 	}
 
 	for _, msg := range req.Messages {
+		text, audio, err := parseContent(msg.Content)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse OpenAI message content: %w", err)
+		}
 		if msg.Role == "system" {
-			universal.System = msg.Content
+			universal.System = text
 		} else {
 			universal.Messages = append(universal.Messages, formats.UniversalMessage{
 				Role:    msg.Role,
-				Content: msg.Content,
+				Content: text,
+				Audio:   audio,
 			})
 		}
 	}
@@ -112,16 +181,24 @@ func (h *Handler) BuildRequest(req *formats.UniversalRequest) ([]byte, error) {
 	}
 
 	if req.System != "" {
+		sysContent, err := buildContent(req.System, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build OpenAI system content: %w", err)
+		}
 		openaiReq.Messages = append(openaiReq.Messages, RequestMessage{
 			Role:    "system",
-			Content: req.System,
+			Content: sysContent,
 		})
 	}
 
 	for _, msg := range req.Messages {
+		content, err := buildContent(msg.Content, msg.Audio)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build OpenAI message content: %w", err)
+		}
 		openaiReq.Messages = append(openaiReq.Messages, RequestMessage{
 			Role:    msg.Role,
-			Content: msg.Content,
+			Content: content,
 		})
 	}
 
