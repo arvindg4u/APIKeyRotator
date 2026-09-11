@@ -31,19 +31,11 @@ func NewGeminiAdapter(cfg *config.Config, db *gorm.DB, cacheClient cache.CacheIn
 
 // ProcessRequest 处理Gemini格式的请求
 func (a *GeminiAdapter) ProcessRequest() (*services.TargetRequest, error) {
-	// 1. 代理访问认证 (劫持 'x-goog-api-key' Header)
-	proxyKey := a.c.GetHeader("x-goog-api-key")
+	// 1. 代理访问认证 (与客户端SDK格式无关, 支持 Bearer/x-api-key/x-goog-api-key/key 等)
+	proxyKey := a.GetProxyKey()
 
-	validKeys := a.cfg.GetGlobalProxyKeys()
-	isValidKey := false
-	for _, key := range validKeys {
-		if proxyKey == key {
-			isValidKey = true
-			break
-		}
-	}
-	if !isValidKey {
-		return nil, fmt.Errorf("invalid Proxy Key. Provide it via the 'key' URL query parameter")
+	if !a.ValidateProxyKey(proxyKey) {
+		return nil, fmt.Errorf("invalid Proxy Key. Provide it via 'Authorization: Bearer <key>', 'x-goog-api-key' header, or the 'key' URL query parameter")
 	}
 
 	// 2. 轮询上游密钥
@@ -53,7 +45,10 @@ func (a *GeminiAdapter) ProcessRequest() (*services.TargetRequest, error) {
 	}
 
 	// 3. 构建目标请求 (偷梁换柱)
-	headers := utils.FilterRequestHeaders(a.c.Request.Header, []string{"x-goog-api-key", "accept-encoding"})
+	// 移除客户端用于代理认证的Header, 避免代理密钥泄漏到上游
+	headers := utils.FilterRequestHeaders(a.c.Request.Header, []string{
+		"x-goog-api-key", "authorization", "x-api-key", "x-anthropic-api-key", "accept-encoding",
+	})
 
 	// 优先使用数据库中为该proxyConfig保存的APIKeyName, 否则回退到默认值
 	keyName := "x-goog-api-key"
@@ -67,17 +62,26 @@ func (a *GeminiAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		keyLocation = *a.proxyConfig.APIKeyLocation
 	}
 
+	// 处理查询参数 (剔除客户端用于代理认证的 'key' 参数, 避免泄漏代理密钥)
+	params := make(map[string]string)
+	for key, values := range a.c.Request.URL.Query() {
+		if len(values) == 0 {
+			continue
+		}
+		// 客户端传入的 'key' 是代理密钥, 不应转发给上游
+		if strings.EqualFold(key, "key") {
+			continue
+		}
+		params[key] = values[0]
+	}
+
 	// 根据keyLocation将key添加到headers或params
 	if keyLocation == "header" {
 		// 注入真实的Gemini Key
 		headers[keyName] = upstreamKey
 	} else if keyLocation == "query" {
 		// 将key添加到查询参数
-		if a.c.Request.URL.RawQuery == "" {
-			a.c.Request.URL.RawQuery = fmt.Sprintf("%s=%s", keyName, upstreamKey)
-		} else {
-			a.c.Request.URL.RawQuery += fmt.Sprintf("&%s=%s", keyName, upstreamKey)
-		}
+		params[keyName] = upstreamKey
 	}
 
 	// URL拼接方式也不同
@@ -86,14 +90,6 @@ func (a *GeminiAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		baseURL = strings.TrimSuffix(*a.proxyConfig.TargetBaseURL, "/")
 	}
 	finalURL := fmt.Sprintf("%s/%s", baseURL, a.action)
-
-	// 处理查询参数
-	params := make(map[string]string)
-	for key, values := range a.c.Request.URL.Query() {
-		if len(values) > 0 {
-			params[key] = values[0]
-		}
-	}
 
 	// 读取请求体
 	body, err := io.ReadAll(a.c.Request.Body)

@@ -98,6 +98,10 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 	if needConversion {
 		logger.Infof("Request format conversion enabled: %s -> %s", clientFormat, apiFormat)
 
+		// 在转换前从原始请求体中提取模型名与流式标志 (转换后目标格式可能不包含这些字段)
+		model := extractModelFromBody(bodyBytes)
+		stream := extractStreamFromBody(bodyBytes)
+
 		converter, err := converters.NewConverter(clientFormat, apiFormat)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create converter: %w", err)
@@ -114,12 +118,18 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 		// 转换请求路径
 		convertedAction = converter.GetTargetPath(action)
 
-		// 如果路径包含 {model} 占位符，从请求体中提取模型名并替换
+		// 如果路径包含 {model} 占位符，用从原始请求体中提取的模型名替换
 		if strings.Contains(convertedAction, "{model}") {
-			model := extractModelFromBody(bodyBytes)
 			if model != "" {
 				convertedAction = strings.ReplaceAll(convertedAction, "{model}", model)
+			} else {
+				logger.Warningf("Target path '%s' contains {model} placeholder but no model was found in request body", convertedAction)
 			}
+		}
+
+		// 流式请求: Gemini 上游需使用 streamGenerateContent 端点
+		if stream && strings.Contains(convertedAction, ":generateContent") {
+			convertedAction = strings.ReplaceAll(convertedAction, ":generateContent", ":streamGenerateContent")
 		}
 
 		logger.Infof("Converted action path: %s -> %s", action, convertedAction)
@@ -310,6 +320,18 @@ func (h *LLMProxyHandler) forwardStreamWithConversion(c *gin.Context, body io.Re
 			if err := scanner.Err(); err != nil {
 				logger.Errorf("Error scanning stream: %v", err)
 			}
+			// 流结束: 写入目标格式所需的结束事件 (如 OpenAI 的 [DONE])
+			for _, event := range converter.GetStreamEndEvents() {
+				if _, err := w.Write([]byte("data: ")); err != nil {
+					return false
+				}
+				if _, err := w.Write(event); err != nil {
+					return false
+				}
+				if _, err := w.Write([]byte("\n\n")); err != nil {
+					return false
+				}
+			}
 			return false
 		}
 
@@ -327,8 +349,19 @@ func (h *LLMProxyHandler) forwardStreamWithConversion(c *gin.Context, body io.Re
 
 			// 处理 [DONE] 信号
 			if payload == "[DONE]" {
-				w.Write([]byte("data: [DONE]\n\n"))
-				return true
+				// 上游结束信号: 写入目标格式所需的结束事件并结束流
+				for _, event := range converter.GetStreamEndEvents() {
+					if _, err := w.Write([]byte("data: ")); err != nil {
+						return false
+					}
+					if _, err := w.Write(event); err != nil {
+						return false
+					}
+					if _, err := w.Write([]byte("\n\n")); err != nil {
+						return false
+					}
+				}
+				return false
 			}
 
 			// 转换JSON payload
@@ -372,4 +405,18 @@ func extractModelFromBody(body []byte) string {
 	}
 
 	return ""
+}
+
+// extractStreamFromBody extracts the stream flag from a request body
+func extractStreamFromBody(body []byte) bool {
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+
+	if stream, ok := req["stream"].(bool); ok {
+		return stream
+	}
+
+	return false
 }
