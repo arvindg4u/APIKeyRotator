@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"api-key-rotator/backend/internal/adapters"
 	"api-key-rotator/backend/internal/config"
@@ -153,11 +154,86 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 }
 
 // forwardLLMRequest 转发LLM请求到目标服务器，并应用响应格式转换
+// 上游返回 429/401/403 时自动轮换下一个 Key 重试，直到所有可用 Key 都试过一遍
 func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.TargetRequest, proxyConfig *models.ProxyConfig) error {
+	// 获取格式配置，创建转换器 (与 Key 无关，只创建一次)
+	apiFormat := "openai_compatible"
+	if proxyConfig.APIFormat != nil {
+		apiFormat = *proxyConfig.APIFormat
+	}
+	clientFormat := "none"
+	if proxyConfig.OutputFormat != nil {
+		clientFormat = *proxyConfig.OutputFormat
+	}
+
+	needConversion := converters.NeedsConversion(clientFormat, apiFormat)
+	var converter *converters.Converter
+	if needConversion {
+		var err error
+		converter, err = converters.NewConverter(apiFormat, clientFormat)
+		if err != nil {
+			logger.Errorf("Failed to create response converter: %v", err)
+			needConversion = false
+		} else {
+			logger.Infof("Response format conversion enabled: %s -> %s", apiFormat, clientFormat)
+		}
+	}
+
+	// 最多尝试次数 = 可用 Key 数量，每个 Key 最多试一次
+	maxAttempts := len(services.ActiveAPIKeys(proxyConfig))
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	client := &http.Client{}
+	if h.cfg.ProxyTimeout > 0 {
+		client.Timeout = time.Duration(h.cfg.ProxyTimeout) * time.Second
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// 上一次尝试的 Key 被上游拒绝，轮询下一个 Key 并替换请求中的 Key 后重试
+			retryHandler := services.NewBaseProxyHandler(h.cfg, h.db, h.cacheClient, c, proxyConfig.Slug, "")
+			newKey, err := retryHandler.RotateAPIKey(proxyConfig)
+			if err != nil {
+				logger.Errorf("LLM slug '%s': failed to rotate to next API key on retry: %v", proxyConfig.Slug, err)
+				break
+			}
+			services.InjectUpstreamKey(target, proxyConfig, apiFormat, newKey)
+			logger.Warningf("LLM slug '%s': retrying with next key (attempt %d/%d, key masked: %s)",
+				proxyConfig.Slug, attempt+1, maxAttempts, utils.MaskAPIKeyDefault(newKey))
+		}
+
+		resp, err := h.doUpstreamLLMRequest(client, target)
+		if err != nil {
+			return err
+		}
+
+		if services.IsRetryableStatus(resp.StatusCode) && attempt < maxAttempts-1 {
+			// 耗尽响应体后关闭连接再重试，避免连接泄漏；
+			// 注意此时尚未向客户端写入任何内容，重试是安全的
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			logger.Warningf("LLM slug '%s': upstream returned %d, will try next key (attempt %d/%d)",
+				proxyConfig.Slug, resp.StatusCode, attempt+1, maxAttempts)
+			continue
+		}
+
+		return h.writeLLMResponse(c, resp, converter, needConversion)
+	}
+
+	// 所有 Key 都已试过 (正常情况下最后一次尝试会直接返回上游响应，
+	// 走到这里说明重试时轮询出错)，返回 429 提示客户端稍后再试
+	c.JSON(http.StatusTooManyRequests, gin.H{"detail": "All API keys are rate limited, please try again later"})
+	return nil
+}
+
+// doUpstreamLLMRequest 执行单次上游 HTTP 请求，不写回客户端，供重试循环调用
+func (h *LLMProxyHandler) doUpstreamLLMRequest(client *http.Client, target *services.TargetRequest) (*http.Response, error) {
 	// 构建目标URL
 	targetURL, err := url.Parse(target.URL)
 	if err != nil {
-		return fmt.Errorf("invalid target URL: %w", err)
+		return nil, fmt.Errorf("invalid target URL: %w", err)
 	}
 
 	// 添加查询参数
@@ -172,7 +248,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 	// 创建HTTP请求
 	req, err := http.NewRequest(target.Method, targetURL.String(), bytes.NewReader(target.Body))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// 设置请求头
@@ -183,36 +259,18 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 	logger.Infof("Forwarding request to: %s %s", req.Method, req.URL.String())
 
 	// 发送请求
-	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
 
 	logger.Infof("Received response from target with status code: %d", resp.StatusCode)
+	return resp, nil
+}
 
-	// 获取格式配置，创建转换器
-	apiFormat := "openai_compatible"
-	if proxyConfig.APIFormat != nil {
-		apiFormat = *proxyConfig.APIFormat
-	}
-	clientFormat := "none"
-	if proxyConfig.OutputFormat != nil {
-		clientFormat = *proxyConfig.OutputFormat
-	}
-
-	needConversion := converters.NeedsConversion(clientFormat, apiFormat)
-	var converter *converters.Converter
-	if needConversion {
-		converter, err = converters.NewConverter(apiFormat, clientFormat)
-		if err != nil {
-			logger.Errorf("Failed to create response converter: %v", err)
-			needConversion = false
-		} else {
-			logger.Infof("Response format conversion enabled: %s -> %s", apiFormat, clientFormat)
-		}
-	}
+// writeLLMResponse 将上游响应 (成功或最终失败) 写回客户端
+func (h *LLMProxyHandler) writeLLMResponse(c *gin.Context, resp *http.Response, converter *converters.Converter, needConversion bool) error {
+	defer resp.Body.Close()
 
 	// 过滤响应头
 	filteredHeaders := utils.FilterResponseHeaders(resp.Header)
@@ -234,48 +292,47 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		if needConversion && converter != nil {
 			// 带转换的流式响应
 			return h.forwardStreamWithConversion(c, resp.Body, converter)
-		} else {
-			// 直接透传流式响应
-			return h.forwardStreamDirect(c, resp.Body)
 		}
-	} else {
-		// 普通响应处理
-		var bodyReader io.Reader = resp.Body
+		// 直接透传流式响应
+		return h.forwardStreamDirect(c, resp.Body)
+	}
 
-		// 检查是否是gzip压缩的响应
-		if resp.Header.Get("Content-Encoding") == "gzip" {
-			gzReader, err := gzip.NewReader(resp.Body)
-			if err != nil {
-				return fmt.Errorf("failed to create gzip reader: %w", err)
-			}
-			defer gzReader.Close()
-			bodyReader = gzReader
-			logger.Infof("Response is gzip compressed, decompressing...")
-		}
+	// 普通响应处理
+	var bodyReader io.Reader = resp.Body
 
-		body, err := io.ReadAll(bodyReader)
+	// 检查是否是gzip压缩的响应
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			return fmt.Errorf("failed to read response body: %w", err)
+			return fmt.Errorf("failed to create gzip reader: %w", err)
 		}
+		defer gzReader.Close()
+		bodyReader = gzReader
+		logger.Infof("Response is gzip compressed, decompressing...")
+	}
 
-		// 如果是错误响应，打印详细日志
-		if resp.StatusCode >= 400 {
-			logger.Errorf("Target server returned error %d: %s", resp.StatusCode, string(body))
-		}
+	body, err := io.ReadAll(bodyReader)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
 
-		if needConversion && converter != nil {
-			// 转换响应格式
-			convertedBody, err := converter.ConvertResponse(body)
-			if err != nil {
-				logger.Errorf("Failed to convert response: %v", err)
-				// 转换失败时返回原始响应
-				c.Data(resp.StatusCode, contentType, body)
-				return nil
-			}
-			c.Data(resp.StatusCode, "application/json", convertedBody)
-		} else {
+	// 如果是错误响应，打印详细日志
+	if resp.StatusCode >= 400 {
+		logger.Errorf("Target server returned error %d: %s", resp.StatusCode, string(body))
+	}
+
+	if needConversion && converter != nil {
+		// 转换响应格式
+		convertedBody, err := converter.ConvertResponse(body)
+		if err != nil {
+			logger.Errorf("Failed to convert response: %v", err)
+			// 转换失败时返回原始响应
 			c.Data(resp.StatusCode, contentType, body)
+			return nil
 		}
+		c.Data(resp.StatusCode, "application/json", convertedBody)
+	} else {
+		c.Data(resp.StatusCode, contentType, body)
 	}
 
 	return nil
