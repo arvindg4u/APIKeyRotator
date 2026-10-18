@@ -47,13 +47,6 @@ func NewBaseLLMAdapter(cfg *config.Config, db *gorm.DB, cacheClient cache.CacheI
 	}
 }
 
-// RotateUpstreamKey 从密钥池中轮询一个真实的上游API Key
-func (a *BaseLLMAdapter) RotateUpstreamKey() (string, error) {
-	// 直接使用预加载好的ProxyConfig
-	handler := services.NewBaseProxyHandler(a.cfg, a.db, a.cacheClient, a.c, a.proxyConfig.Slug, a.action)
-	return handler.RotateAPIKey(a.proxyConfig)
-}
-
 // GetProxyKey 从请求中提取代理密钥。
 // 代理密钥认证与客户端SDK格式无关: 无论客户端使用 OpenAI/Anthropic/Gemini 哪种SDK,
 // 都能从常见的认证位置提取到代理密钥。

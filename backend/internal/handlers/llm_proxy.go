@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,7 +77,12 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 		return nil, nil, fmt.Errorf("LLM service configuration with slug '%s' not found or inactive", slug)
 	}
 
-	// 2. 获取格式配置
+	// 2. 校验密钥池 (没有可用的 Key 时没必要继续往下走)
+	if len(services.ActiveAPIKeys(&proxyConfig)) == 0 {
+		return nil, nil, fmt.Errorf("no active API keys for LLM service '%s'", slug)
+	}
+
+	// 3. 获取格式配置
 	apiFormat := "openai_compatible"
 	if proxyConfig.APIFormat != nil {
 		apiFormat = *proxyConfig.APIFormat
@@ -85,16 +92,16 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 		clientFormat = *proxyConfig.OutputFormat
 	}
 
-	// 3. 检查是否需要格式转换
+	// 4. 检查是否需要格式转换
 	needConversion := converters.NeedsConversion(clientFormat, apiFormat)
 
-	// 4. 读取请求体
+	// 5. 读取请求体
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
-	// 5. 如果需要，转换请求格式
+	// 6. 如果需要，转换请求格式
 	convertedAction := action
 	if needConversion {
 		logger.Infof("Request format conversion enabled: %s -> %s", clientFormat, apiFormat)
@@ -136,10 +143,10 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 		logger.Infof("Converted action path: %s -> %s", action, convertedAction)
 	}
 
-	// 6. 将转换后的body放回request
+	// 7. 将转换后的body放回request
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	// 7. 根据 API format 选择适配器 (使用API格式，而非客户端格式)
+	// 8. 根据 API format 选择适配器 (使用API格式，而非客户端格式)
 	var adapter adapters.LLMAdapter
 	switch apiFormat {
 	case "openai_compatible":
@@ -153,7 +160,7 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 		return nil, nil, fmt.Errorf("unsupported API format '%s' for LLM service '%s'", apiFormat, slug)
 	}
 
-	// 8. 实例化适配器并处理请求
+	// 9. 实例化适配器并处理请求
 	logger.Infof("LLM Proxy Handler for '%s': Dispatching to adapter: %s", slug, apiFormat)
 	targetRequest, err := adapter.ProcessRequest()
 	if err != nil {
@@ -164,7 +171,7 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 }
 
 // forwardLLMRequest 转发LLM请求到目标服务器，并应用响应格式转换
-// 上游返回 429/401/403 时自动轮换下一个 Key 重试，直到所有可用 Key 都试过一遍
+// 上游返回 429/401/403 时自动换下一个 Key 重试，直到所有可用 Key 都试过一遍
 func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.TargetRequest, proxyConfig *models.ProxyConfig) error {
 	// 获取格式配置，创建转换器 (与 Key 无关，只创建一次)
 	apiFormat := "openai_compatible"
@@ -189,51 +196,83 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		}
 	}
 
-	// 最多尝试次数 = 可用 Key 数量，每个 Key 最多试一次
-	maxAttempts := len(services.ActiveAPIKeys(proxyConfig))
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
 	client := &http.Client{}
 	if h.cfg.ProxyTimeout > 0 {
 		client.Timeout = time.Duration(h.cfg.ProxyTimeout) * time.Second
 	}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 {
-			// 上一次尝试的 Key 被上游拒绝，轮询下一个 Key 并替换请求中的 Key 后重试
-			retryHandler := services.NewBaseProxyHandler(h.cfg, h.db, h.cacheClient, c, proxyConfig.Slug, "")
-			newKey, err := retryHandler.RotateAPIKey(proxyConfig)
-			if err != nil {
-				logger.Errorf("LLM slug '%s': failed to rotate to next API key on retry: %v", proxyConfig.Slug, err)
-				break
+	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("LLM Proxy for '%s'", proxyConfig.Slug))
+
+	// 没有配置注入位置时，换 Key 对上游请求没有任何影响，只尝试一次
+	keyName, keyLocation := services.ResolveUpstreamKeyTarget(proxyConfig, apiFormat)
+	injectEnabled := keyName != "" && keyLocation != ""
+
+	// tried 记录本次请求已经用过的 Key，保证不会重复尝试同一个 Key
+	tried := make(map[string]bool)
+	var lastRetryable *services.BufferedResponse
+
+	for {
+		selected, err := rotator.Next(proxyConfig, tried)
+		if err != nil {
+			if errors.Is(err, services.ErrNoAvailableKey) {
+				return h.writeExhaustedLLMResponse(c, rotator, proxyConfig, lastRetryable, converter, needConversion)
 			}
-			services.InjectUpstreamKey(target, proxyConfig, apiFormat, newKey)
-			logger.Warningf("LLM slug '%s': retrying with next key (attempt %d/%d, key masked: %s)",
-				proxyConfig.Slug, attempt+1, maxAttempts, utils.MaskAPIKeyDefault(newKey))
+			return err
 		}
+		tried[selected.KeyValue] = true
+
+		// 每次尝试都重新注入 Key：首次请求与重试走的是同一段注入逻辑，位置绝不会不一致
+		services.InjectUpstreamKey(target, proxyConfig, apiFormat, selected.KeyValue)
+		logger.Infof("LLM slug '%s': using upstream key (masked): %s",
+			proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue))
 
 		resp, err := h.doUpstreamLLMRequest(client, target)
 		if err != nil {
 			return err
 		}
 
-		if services.IsRetryableStatus(resp.StatusCode) && attempt < maxAttempts-1 {
-			// 耗尽响应体后关闭连接再重试，避免连接泄漏；
-			// 注意此时尚未向客户端写入任何内容，重试是安全的
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			logger.Warningf("LLM slug '%s': upstream returned %d, will try next key (attempt %d/%d)",
-				proxyConfig.Slug, resp.StatusCode, attempt+1, maxAttempts)
-			continue
+		if !services.IsRetryableStatus(resp.StatusCode) {
+			return h.writeLLMResponse(c, resp, converter, needConversion)
 		}
 
-		return h.writeLLMResponse(c, resp, converter, needConversion)
+		// 可重试状态：先读完响应体并关闭连接（避免连接泄漏），再换下一个 Key 重试。
+		// 注意此时尚未向客户端写入任何内容，重试是安全的。
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, services.MaxBufferedErrorBody))
+		resp.Body.Close()
+		lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			// 429：让这个 Key 冷却一段时间，后续请求优先使用其它 Key。
+			// 上游给出 Retry-After 时按上游建议的时间冷却。
+			rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(resp.Header, body))
+		}
+
+		logger.Warningf("LLM slug '%s': upstream returned %d for key %s, trying next key",
+			proxyConfig.Slug, resp.StatusCode, utils.MaskAPIKeyDefault(selected.KeyValue))
+
+		if !injectEnabled {
+			break
+		}
 	}
 
-	// 所有 Key 都已试过 (正常情况下最后一次尝试会直接返回上游响应，
-	// 走到这里说明重试时轮询出错)，返回 429 提示客户端稍后再试
+	return h.writeExhaustedLLMResponse(c, rotator, proxyConfig, lastRetryable, converter, needConversion)
+}
+
+// writeExhaustedLLMResponse 在所有 Key 都试过之后写回响应：
+// 优先回写最后一次上游响应（保留真实错误信息），并带上 Retry-After 提示客户端何时重试
+func (h *LLMProxyHandler) writeExhaustedLLMResponse(c *gin.Context, rotator *services.KeyRotator,
+	proxyConfig *models.ProxyConfig, lastRetryable *services.BufferedResponse,
+	converter *converters.Converter, needConversion bool) error {
+
+	if retryAfter := rotator.ShortestCooldown(proxyConfig); retryAfter > 0 {
+		c.Header("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
+	}
+
+	if lastRetryable != nil {
+		return h.writeLLMResponse(c, lastRetryable.HTTPResponse(), converter, needConversion)
+	}
+
+	logger.Errorf("LLM slug '%s': no API key available to serve the request", proxyConfig.Slug)
 	c.JSON(http.StatusTooManyRequests, gin.H{"detail": "All API keys are rate limited, please try again later"})
 	return nil
 }

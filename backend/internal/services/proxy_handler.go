@@ -1,20 +1,23 @@
 package services
 
 import (
-	"context"
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/config"
-	"api-key-rotator/backend/internal/logger"
 	"api-key-rotator/backend/internal/models"
-	"api-key-rotator/backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// MaxBufferedErrorBody 缓存可重试响应体时允许的最大长度。
+// 429/401/403 的错误体通常很小, 设上限只是为了避免异常上游把内存打爆。
+const MaxBufferedErrorBody = 1 << 20 // 1 MiB
 
 // TargetRequest 封装准备好的、即将被转发的请求信息
 type TargetRequest struct {
@@ -23,6 +26,32 @@ type TargetRequest struct {
 	Headers map[string]string
 	Params  map[string]string
 	Body    []byte
+}
+
+// BufferedResponse 缓存下来的可重试响应 (429/401/403)。
+// 换 Key 重试时先把它读完并关闭连接, 这样在所有 Key 都失败时
+// 还能把上游真实的错误信息回写给客户端。
+type BufferedResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+// HTTPResponse 把缓存的响应重新包装成 *http.Response, 以复用现有的写回逻辑。
+// 响应体已经被完整读出 (且 Go 的 transport 会透明解压 gzip), 因此长度/编码头不再有效。
+func (b *BufferedResponse) HTTPResponse() *http.Response {
+	var header http.Header
+	if b.Header != nil {
+		header = b.Header.Clone()
+		header.Del("Content-Encoding")
+		header.Del("Content-Length")
+	}
+
+	return &http.Response{
+		StatusCode: b.StatusCode,
+		Header:     header,
+		Body:       io.NopCloser(bytes.NewReader(b.Body)),
+	}
 }
 
 // BaseProxyHandler 代理处理器的抽象基类
@@ -72,10 +101,11 @@ func IsRetryableStatus(statusCode int) bool {
 	}
 }
 
-// InjectUpstreamKey 将已构建好的 TargetRequest 中注入的上游 Key 替换为 newKey
-// 注入规则必须与各 adapter 的初次注入保持一致 (header 还是 query、是否加 Bearer 前缀)
-func InjectUpstreamKey(target *TargetRequest, proxyConfig *models.ProxyConfig, apiFormat string, newKey string) {
-	// 各格式的默认注入位置/名称 (与 adapters/*.go 中的默认值保持一致)
+// ResolveUpstreamKeyTarget 计算向上游请求注入 Key 时使用的名称与位置 (header / query)。
+// 这是唯一的判定入口: 首次请求和 429 换 Key 重试都必须走这里,
+// 否则两者注入位置不一致就会出现"换了 Key 但请求还是用旧 Key"的情况。
+func ResolveUpstreamKeyTarget(proxyConfig *models.ProxyConfig, apiFormat string) (string, string) {
+	// 各格式的默认注入位置/名称
 	keyName := ""
 	keyLocation := ""
 	switch apiFormat {
@@ -92,18 +122,33 @@ func InjectUpstreamKey(target *TargetRequest, proxyConfig *models.ProxyConfig, a
 		// generic: 无默认值，完全依赖数据库配置
 	}
 
-	if proxyConfig.APIKeyName != nil && *proxyConfig.APIKeyName != "" {
-		keyName = *proxyConfig.APIKeyName
+	// 数据库中的配置优先 (TrimSpace + 小写, 避免 "Header"/"QUERY" 之类写法导致注入位置错乱)
+	if proxyConfig.APIKeyName != nil && strings.TrimSpace(*proxyConfig.APIKeyName) != "" {
+		keyName = strings.TrimSpace(*proxyConfig.APIKeyName)
 	}
-	if proxyConfig.APIKeyLocation != nil && *proxyConfig.APIKeyLocation != "" {
-		keyLocation = strings.ToLower(*proxyConfig.APIKeyLocation)
+	if proxyConfig.APIKeyLocation != nil && strings.TrimSpace(*proxyConfig.APIKeyLocation) != "" {
+		keyLocation = strings.ToLower(strings.TrimSpace(*proxyConfig.APIKeyLocation))
 	}
 
+	// Gemini 用 query 传 Key 时, 参数名就是 "key"
+	if apiFormat == "gemini_native" && keyLocation == "query" &&
+		(proxyConfig.APIKeyName == nil || strings.TrimSpace(*proxyConfig.APIKeyName) == "") {
+		keyName = "key"
+	}
+
+	return keyName, keyLocation
+}
+
+// InjectUpstreamKey 把 newKey 注入到即将转发的请求中 (替换掉上一次尝试使用的 Key)。
+// 返回值表示是否真的完成了注入; 没有配置注入位置时返回 false (此时换 Key 重试没有意义)。
+func InjectUpstreamKey(target *TargetRequest, proxyConfig *models.ProxyConfig, apiFormat string, newKey string) bool {
+	keyName, keyLocation := ResolveUpstreamKeyTarget(proxyConfig, apiFormat)
 	if keyName == "" || keyLocation == "" {
-		return
+		return false
 	}
 
-	if keyLocation == "header" {
+	switch keyLocation {
+	case "header":
 		if target.Headers == nil {
 			target.Headers = make(map[string]string)
 		}
@@ -112,39 +157,16 @@ func InjectUpstreamKey(target *TargetRequest, proxyConfig *models.ProxyConfig, a
 		} else {
 			target.Headers[keyName] = newKey
 		}
-	} else if keyLocation == "query" {
+	case "query":
 		if target.Params == nil {
 			target.Params = make(map[string]string)
 		}
 		target.Params[keyName] = newKey
-	}
-}
-
-// RotateAPIKey 从与给定配置关联的密钥池中轮询一个API Key
-func (h *BaseProxyHandler) RotateAPIKey(serviceConfig *models.ProxyConfig) (string, error) {
-	// 获取活跃的密钥
-	activeKeys := ActiveAPIKeys(serviceConfig)
-
-	if len(activeKeys) == 0 {
-		logger.Errorf("%s: Service '%s' has no active API keys.", h.logPrefix, serviceConfig.Name)
-		return "", fmt.Errorf("no active API keys for this service")
+	default:
+		return false
 	}
 
-	// 使用缓存原子性递增来实现轮询
-	ctx := context.Background()
-	keyIndexKey := fmt.Sprintf("proxy_config:%d:key_index", serviceConfig.ID)
-	keyIndex, err := h.cacheClient.Incr(ctx, keyIndexKey)
-	if err != nil {
-		logger.Errorf("%s: Failed to increment key index in cache: %v", h.logPrefix, err)
-		return "", fmt.Errorf("failed to rotate API key")
-	}
-
-	// 计算实际索引
-	actualIndex := int(keyIndex-1) % len(activeKeys)
-	selectedKey := activeKeys[actualIndex].KeyValue
-
-	logger.Infof("%s: Selected API key (masked): %s", h.logPrefix, utils.MaskAPIKeyDefault(selectedKey))
-	return selectedKey, nil
+	return true
 }
 
 // ValidateSlug 验证slug格式

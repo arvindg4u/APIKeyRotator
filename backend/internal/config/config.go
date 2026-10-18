@@ -7,6 +7,14 @@ import (
 	"strings"
 )
 
+const (
+	// DefaultKeyCooldownSeconds 上游返回 429 但没有给出 Retry-After 时使用的默认冷却时长 (秒)。
+	// 设置为 0 可关闭冷却机制，退化为"纯轮询 + 失败即换下一个 Key"。
+	DefaultKeyCooldownSeconds = 60
+	// DefaultMaxKeyCooldownSeconds 单次冷却的上限 (秒)，避免上游给出超长的 Retry-After 把 Key 永久封存
+	DefaultMaxKeyCooldownSeconds = 1800
+)
+
 // Config 应用配置结构
 type Config struct {
 	// 数据库配置
@@ -36,6 +44,11 @@ type Config struct {
 	ProxyTimeout       int
 	GlobalProxyKeys    string // 逗号分隔的多个密钥，也支持单个密钥
 	ProxyPublicBaseURL string
+
+	// Key 冷却配置 (上游返回 429 之后，该 Key 被降权的时长，单位秒)
+	// 设置为 0 可以关闭冷却，退化为"每次请求纯轮询 + 失败即换下一个 Key"
+	KeyCooldownSeconds    int
+	KeyMaxCooldownSeconds int
 
 	// 日志配置
 	LogLevel string
@@ -83,7 +96,12 @@ func Load() *Config {
 		ProxyTimeout:       getEnvAsInt("PROXY_TIMEOUT", 30),
 		GlobalProxyKeys:    getEnv("GLOBAL_PROXY_KEYS", "your-global-proxy-key"),
 		ProxyPublicBaseURL: getEnv("PROXY_PUBLIC_BASE_URL", "http://localhost:8000"),
-		LogLevel:           getEnv("LOG_LEVEL", "info"),
+
+		// 上游限流 (429) 之后的 Key 冷却时长。上游给出 Retry-After 时以其为准。
+		KeyCooldownSeconds:    getEnvAsInt("KEY_COOLDOWN_SECONDS", DefaultKeyCooldownSeconds),
+		KeyMaxCooldownSeconds: getEnvAsInt("KEY_MAX_COOLDOWN_SECONDS", DefaultMaxKeyCooldownSeconds),
+
+		LogLevel: getEnv("LOG_LEVEL", "info"),
 	}
 
 	return config

@@ -38,31 +38,15 @@ func (a *GeminiAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		return nil, fmt.Errorf("invalid Proxy Key. Provide it via 'Authorization: Bearer <key>', 'x-goog-api-key' header, or the 'key' URL query parameter")
 	}
 
-	// 2. 轮询上游密钥
-	upstreamKey, err := a.RotateUpstreamKey()
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. 构建目标请求 (偷梁换柱)
+	// 2. 构建目标请求 (偷梁换柱)
 	// 移除客户端用于代理认证的Header, 避免代理密钥泄漏到上游
 	headers := utils.FilterRequestHeaders(a.c.Request.Header, []string{
 		"x-goog-api-key", "authorization", "x-api-key", "x-anthropic-api-key", "accept-encoding",
 	})
 
-	// 优先使用数据库中为该proxyConfig保存的APIKeyName, 否则回退到默认值
-	keyName := "x-goog-api-key"
-	if a.proxyConfig.APIKeyName != nil && *a.proxyConfig.APIKeyName != "" {
-		keyName = *a.proxyConfig.APIKeyName
-	}
-
-	// 优先使用数据库中为该proxyConfig保存的APIKeyLocation, 否则回退到默认值
-	keyLocation := "header"
-	if a.proxyConfig.APIKeyLocation != nil && *a.proxyConfig.APIKeyLocation != "" {
-		keyLocation = *a.proxyConfig.APIKeyLocation
-	}
-
 	// 处理查询参数 (剔除客户端用于代理认证的 'key' 参数, 避免泄漏代理密钥)
+	// 注意: 这里不再注入上游 Key。真实 Key 由 forwardLLMRequest 在每次尝试前统一注入
+	// (见 services.InjectUpstreamKey), 这样 429 换 Key 重试时注入位置与首次请求完全一致。
 	params := make(map[string]string)
 	for key, values := range a.c.Request.URL.Query() {
 		if len(values) == 0 {
@@ -73,15 +57,6 @@ func (a *GeminiAdapter) ProcessRequest() (*services.TargetRequest, error) {
 			continue
 		}
 		params[key] = values[0]
-	}
-
-	// 根据keyLocation将key添加到headers或params
-	if keyLocation == "header" {
-		// 注入真实的Gemini Key
-		headers[keyName] = upstreamKey
-	} else if keyLocation == "query" {
-		// 将key添加到查询参数
-		params[keyName] = upstreamKey
 	}
 
 	// URL拼接方式也不同
@@ -97,7 +72,7 @@ func (a *GeminiAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
-	logger.Infof("%s: Rotated to upstream key (masked): %s", a.logPrefix, utils.MaskAPIKeyDefault(upstreamKey))
+	logger.Infof("%s: Prepared upstream request %s %s", a.logPrefix, a.c.Request.Method, finalURL)
 
 	return &services.TargetRequest{
 		Method:  a.c.Request.Method,

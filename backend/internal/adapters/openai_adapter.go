@@ -80,39 +80,10 @@ func (a *OpenAIAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		return nil, fmt.Errorf("invalid Proxy Key. Provide it via 'Authorization: Bearer <key>' header or 'api_key' in JSON body")
 	}
 
-	// 2. 轮询上游密钥
-	upstreamKey, err := a.RotateUpstreamKey()
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. 构建目标请求 (偷梁换柱)
+	// 2. 构建目标请求 (偷梁换柱)
+	// 注意: 这里不再注入上游 Key。真实 Key 由 forwardLLMRequest 在每次尝试前统一注入
+	// (见 services.InjectUpstreamKey), 这样 429 换 Key 重试时注入位置与首次请求完全一致。
 	headers := utils.FilterRequestHeaders(a.c.Request.Header, []string{"authorization", "accept-encoding"})
-
-	// 优先使用数据库中为该proxyConfig保存的APIKeyName, 否则回退到默认值
-	keyName := "Authorization"
-	if a.proxyConfig.APIKeyName != nil && *a.proxyConfig.APIKeyName != "" {
-		keyName = *a.proxyConfig.APIKeyName
-	}
-
-	// 优先使用数据库中为该proxyConfig保存的APIKeyLocation, 否则回退到默认值
-	keyLocation := "header"
-	if a.proxyConfig.APIKeyLocation != nil && *a.proxyConfig.APIKeyLocation != "" {
-		keyLocation = *a.proxyConfig.APIKeyLocation
-	}
-
-	// 根据keyLocation将key添加到headers或params
-	if keyLocation == "header" {
-		// 添加真实的Authorization头
-		headers[keyName] = fmt.Sprintf("Bearer %s", upstreamKey)
-	} else if keyLocation == "query" {
-		// 将key添加到查询参数
-		if a.c.Request.URL.RawQuery == "" {
-			a.c.Request.URL.RawQuery = fmt.Sprintf("%s=%s", keyName, upstreamKey)
-		} else {
-			a.c.Request.URL.RawQuery += fmt.Sprintf("&%s=%s", keyName, upstreamKey)
-		}
-	}
 
 	// 从数据库获取配置好的基础URL，并移除末尾可能存在的斜杠
 	baseURL := ""
@@ -146,7 +117,7 @@ func (a *OpenAIAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		}
 	}
 
-	logger.Infof("%s: Rotated to upstream key (masked): %s", a.logPrefix, utils.MaskAPIKeyDefault(upstreamKey))
+	logger.Infof("%s: Prepared upstream request %s %s", a.logPrefix, a.c.Request.Method, finalURL)
 
 	return &services.TargetRequest{
 		Method:  a.c.Request.Method,

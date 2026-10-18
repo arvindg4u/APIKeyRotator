@@ -55,39 +55,11 @@ func (a *AnthropicAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		return nil, fmt.Errorf("invalid Proxy Key. Provide it via the 'x-api-key' header")
 	}
 
-	// 2. Rotate the upstream key.
-	upstreamKey, err := a.RotateUpstreamKey()
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. Build the target request.
+	// 2. Build the target request.
+	// Note: the real upstream key is NOT injected here. It is injected by forwardLLMRequest
+	// right before every attempt (see services.InjectUpstreamKey), so that switching to the
+	// next key after a 429 lands in exactly the same place as the first attempt.
 	headers := utils.FilterRequestHeaders(a.c.Request.Header, []string{"x-api-key", "Authorization", "x-anthropic-api-key", "accept-encoding"})
-
-	// 优先使用数据库中为该proxyConfig保存的APIKeyName, 否则回退到默认值
-	keyName := "x-api-key"
-	if a.proxyConfig.APIKeyName != nil && *a.proxyConfig.APIKeyName != "" {
-		keyName = *a.proxyConfig.APIKeyName
-	}
-
-	// 优先使用数据库中为该proxyConfig保存的APIKeyLocation, 否则回退到默认值
-	keyLocation := "header"
-	if a.proxyConfig.APIKeyLocation != nil && *a.proxyConfig.APIKeyLocation != "" {
-		keyLocation = *a.proxyConfig.APIKeyLocation
-	}
-
-	// 根据keyLocation将key添加到headers或params
-	if keyLocation == "header" {
-		// Inject the real upstream key and the fixed anthropic-version.
-		headers[keyName] = upstreamKey
-	} else if keyLocation == "query" {
-		// 将key添加到查询参数
-		if a.c.Request.URL.RawQuery == "" {
-			a.c.Request.URL.RawQuery = fmt.Sprintf("%s=%s", keyName, upstreamKey)
-		} else {
-			a.c.Request.URL.RawQuery += fmt.Sprintf("&%s=%s", keyName, upstreamKey)
-		}
-	}
 	headers["anthropic-version"] = "2023-06-01"
 
 	baseURL := ""
@@ -108,7 +80,7 @@ func (a *AnthropicAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
-	logger.Infof("%s: Rotated to upstream key (masked): %s", a.logPrefix, utils.MaskAPIKeyDefault(upstreamKey))
+	logger.Infof("%s: Prepared upstream request %s %s", a.logPrefix, a.c.Request.Method, finalURL)
 
 	return &services.TargetRequest{
 		Method:  a.c.Request.Method,

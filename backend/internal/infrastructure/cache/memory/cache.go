@@ -49,9 +49,11 @@ func (c *Cache) Set(ctx context.Context, key string, value interface{}, expirati
 }
 
 // Get 获取键值
+// 注意: 过期项会在这里被直接删除, 因此必须用写锁,
+// 否则并发的读操作会触发 "concurrent map read and map write" 导致进程崩溃
 func (c *Cache) Get(ctx context.Context, key string) (string, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	item, exists := c.data[key]
 	if !exists {
@@ -88,9 +90,10 @@ func (c *Cache) Del(ctx context.Context, keys ...string) (int64, error) {
 }
 
 // Exists 检查键是否存在
+// 与 Get 同理: 过期项会被直接删除, 需要写锁
 func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	item, exists := c.data[key]
 	if !exists {
