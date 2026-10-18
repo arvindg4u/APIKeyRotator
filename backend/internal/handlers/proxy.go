@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,16 +100,17 @@ func (h *ProxyHandler) prepareGenericRequest(handler *services.BaseProxyHandler)
 			strings.ToUpper(*proxyConfig.Method), strings.ToUpper(handler.C.Request.Method))
 	}
 
-	// 4. 轮询并注入密钥
-	apiKey, err := handler.RotateAPIKey(&proxyConfig)
-	if err != nil {
-		return nil, nil, err
+	// 4. 校验密钥池 (没有可用的 Key 时没必要继续往下走)
+	if len(services.ActiveAPIKeys(&proxyConfig)) == 0 {
+		return nil, nil, fmt.Errorf("no active API keys for generic service '%s'", proxyConfig.Slug)
 	}
 
 	// 5. 处理请求头
 	headers := utils.FilterRequestHeaders(handler.C.Request.Header, []string{"x-proxy-key"})
 
 	// 6. 处理查询参数
+	// 注意: 这里不再注入上游 Key。真实 Key 由 forwardRequest 在每次尝试前统一注入
+	// (见 services.InjectUpstreamKey), 这样 429 换 Key 重试时注入位置与首次请求完全一致。
 	params := make(map[string]string)
 	for key, values := range handler.C.Request.URL.Query() {
 		if len(values) > 0 {
@@ -115,18 +118,7 @@ func (h *ProxyHandler) prepareGenericRequest(handler *services.BaseProxyHandler)
 		}
 	}
 
-	// 7. 根据配置注入API密钥
-	if proxyConfig.APIKeyLocation != nil && proxyConfig.APIKeyName != nil {
-		location := strings.ToLower(*proxyConfig.APIKeyLocation)
-		keyName := *proxyConfig.APIKeyName
-		if location == "header" {
-			headers[keyName] = apiKey
-		} else if location == "query" {
-			params[keyName] = apiKey
-		}
-	}
-
-	// 8. 读取请求体
+	// 7. 读取请求体
 	body, err := io.ReadAll(handler.C.Request.Body)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read request body: %w", err)
@@ -142,55 +134,97 @@ func (h *ProxyHandler) prepareGenericRequest(handler *services.BaseProxyHandler)
 }
 
 // forwardRequest 转发请求到目标服务器
-// 上游返回 429/401/403 时自动轮换下一个 Key 重试，直到所有可用 Key 都试过一遍
+// 上游返回 429/401/403 时自动换下一个 Key 重试，直到所有可用 Key 都试过一遍
 func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetRequest, proxyConfig *models.ProxyConfig) error {
-	// 最多尝试次数 = 可用 Key 数量，每个 Key 最多试一次
-	maxAttempts := len(services.ActiveAPIKeys(proxyConfig))
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
 	client := &http.Client{}
 	if h.cfg.ProxyTimeout > 0 {
 		client.Timeout = time.Duration(h.cfg.ProxyTimeout) * time.Second
 	}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 {
-			// 上一次尝试的 Key 被上游拒绝，轮询下一个 Key 并替换请求中的 Key 后重试
-			retryHandler := services.NewBaseProxyHandler(h.cfg, h.db, h.cacheClient, c, proxyConfig.Slug, "")
-			newKey, err := retryHandler.RotateAPIKey(proxyConfig)
-			if err != nil {
-				logger.Errorf("Generic slug '%s': failed to rotate to next API key on retry: %v", proxyConfig.Slug, err)
-				break
+	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("Generic Proxy for '%s'", proxyConfig.Slug))
+
+	// 没有配置注入位置时，换 Key 对上游请求没有任何影响，只尝试一次
+	keyName, keyLocation := services.ResolveUpstreamKeyTarget(proxyConfig, "generic")
+	injectEnabled := keyName != "" && keyLocation != ""
+
+	// tried 记录本次请求已经用过的 Key，保证不会重复尝试同一个 Key
+	tried := make(map[string]bool)
+	var lastRetryable *services.BufferedResponse
+
+	for {
+		selected, err := rotator.Next(proxyConfig, tried)
+		if err != nil {
+			if errors.Is(err, services.ErrNoAvailableKey) {
+				return h.writeExhaustedResponse(c, rotator, proxyConfig, lastRetryable)
 			}
-			services.InjectUpstreamKey(target, proxyConfig, "generic", newKey)
-			logger.Warningf("Generic slug '%s': retrying with next key (attempt %d/%d, key masked: %s)",
-				proxyConfig.Slug, attempt+1, maxAttempts, utils.MaskAPIKeyDefault(newKey))
+			return err
 		}
+		tried[selected.KeyValue] = true
+
+		// 每次尝试都重新注入 Key：首次请求与重试走的是同一段注入逻辑，位置绝不会不一致
+		services.InjectUpstreamKey(target, proxyConfig, "generic", selected.KeyValue)
+		logger.Infof("Generic slug '%s': using upstream key (masked): %s",
+			proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue))
 
 		resp, err := h.doGenericUpstreamRequest(c, client, target)
 		if err != nil {
 			return err
 		}
 
-		if services.IsRetryableStatus(resp.StatusCode) && attempt < maxAttempts-1 {
-			// 耗尽响应体后关闭连接再重试，避免连接泄漏；
-			// 注意此时尚未向客户端写入任何内容，重试是安全的
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			logger.Warningf("Generic slug '%s': upstream returned %d, will try next key (attempt %d/%d)",
-				proxyConfig.Slug, resp.StatusCode, attempt+1, maxAttempts)
-			continue
+		if !services.IsRetryableStatus(resp.StatusCode) {
+			return h.writeGenericResponse(c, resp)
 		}
 
-		return h.writeGenericResponse(c, resp)
+		// 可重试状态：先读完响应体并关闭连接（避免连接泄漏），再换下一个 Key 重试。
+		// 注意此时尚未向客户端写入任何内容，重试是安全的。
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, services.MaxBufferedErrorBody))
+		resp.Body.Close()
+		lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			// 429：让这个 Key 冷却一段时间，后续请求优先使用其它 Key
+			rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(resp.Header, body))
+		}
+
+		logger.Warningf("Generic slug '%s': upstream returned %d for key %s, trying next key",
+			proxyConfig.Slug, resp.StatusCode, utils.MaskAPIKeyDefault(selected.KeyValue))
+
+		if !injectEnabled {
+			break
+		}
 	}
 
-	// 所有 Key 都已试过 (正常情况下最后一次尝试会直接返回上游响应，
-	// 走到这里说明重试时轮询出错)，返回 429 提示客户端稍后再试
+	return h.writeExhaustedResponse(c, rotator, proxyConfig, lastRetryable)
+}
+
+// writeExhaustedResponse 在所有 Key 都试过之后写回响应：
+// 优先回写最后一次上游响应（保留真实错误信息），并带上 Retry-After 提示客户端何时重试
+func (h *ProxyHandler) writeExhaustedResponse(c *gin.Context, rotator *services.KeyRotator,
+	proxyConfig *models.ProxyConfig, lastRetryable *services.BufferedResponse) error {
+
+	if retryAfter := rotator.ShortestCooldown(proxyConfig); retryAfter > 0 {
+		c.Header("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
+	}
+
+	if lastRetryable != nil {
+		return h.writeGenericResponse(c, lastRetryable.HTTPResponse())
+	}
+
+	logger.Errorf("Generic slug '%s': no API key available to serve the request", proxyConfig.Slug)
 	c.JSON(http.StatusTooManyRequests, gin.H{"detail": "All API keys are rate limited, please try again later"})
 	return nil
+}
+
+// retryAfterSeconds 把等待时长换算成 Retry-After 响应头需要的秒数 (向上取整，至少 1 秒)
+func retryAfterSeconds(duration time.Duration) int {
+	seconds := int(duration / time.Second)
+	if duration%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	return seconds
 }
 
 // doGenericUpstreamRequest 执行单次上游 HTTP 请求，不写回客户端，供重试循环调用

@@ -100,6 +100,8 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `JWT_SECRET` | Secret key for JWT tokens. | `your_very_secret...` | `a_long_random_string` |
 | `GLOBAL_PROXY_KEYS` | Global proxy keys, comma-separated. | (empty) | `key1,key2` |
 | `PROXY_TIMEOUT` | Proxy request timeout in seconds. | `30` | `60` |
+| `KEY_COOLDOWN_SECONDS` | How long a key is deprioritized after the upstream returns 429. A `Retry-After` from the upstream wins over this. `0` disables cooldown. | `60` | `120` |
+| `KEY_MAX_COOLDOWN_SECONDS` | Upper bound for a single cooldown. | `1800` | `600` |
 | `PROXY_PUBLIC_BASE_URL` | Public access URL for the service. | `http://localhost:8000` | `https://your.domain.com` |
 | **Database** | | | |
 | `DB_TYPE` | Database type. | `sqlite` | `mysql` |

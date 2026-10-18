@@ -35,7 +35,7 @@ docker-compose up -d                                                     # light
 docker-compose -f docker-compose.enterprise.yml up -d                    # enterprise
 ```
 
-No lint config exists. No test files exist (backend README references `go test`, but nothing to run).
+Tests: `cd backend && go test ./...` — unit tests live next to the packages they cover (`internal/services/key_rotator_test.go` + `proxy_handler_test.go` for rotation, `internal/converters/formats/*/handler_test.go`, `internal/handlers/llm_proxy_gemini_test.go`). No lint config exists.
 
 ## Architecture
 
@@ -45,6 +45,7 @@ Entry: `backend/main.go` — `godotenv.Load` → `logger.Setup` → `config.Load
 - `internal/infrastructure/` — interface abstraction: `database/interface.go` (Repository) with `sqlite/` + `mysql/` impls; `cache/interface.go` with `memory/` + `redis/` impls. New backends (e.g. Postgres) follow the same pattern: add impl package, wire into `config/factory.go`.
 - `internal/router/router.go` (Gin, DebugMode): `GET /health` (Render/Docker probe) → static `./static/index.html` + `/assets` → `NoRoute` SPA fallback (returns index.html for non-`/admin|/proxy|/llm` paths) → `/admin/*` management (JWT), `/proxy/*slug` generic proxy, `/llm/:slug/*action` LLM proxy (both key on `GLOBAL_PROXY_KEYS` bearer).
 - Request flow: `handlers/proxy.go` + `handlers/llm_proxy.go` → `services/proxy_handler.go` (rotation/failover) → `adapters/` (`base_adapter.go`, `openai_adapter.go`, `anthropic_adapter.go`, `gemini_adapter.go`) for LLM dialects. `handlers/management.go` = CRUD for proxy configs + key pools. Supporting: `models/`, `dto/`, `converters/`, `middleware/cors.go`, `logger/`, `utils/`.
+- **Key rotation / 429 handling** (`services/key_rotator.go`, `KEY_COOLDOWN_SECONDS`): the upstream key is injected **once per attempt** by `services.InjectUpstreamKey`, and *only* there — adapters must not inject keys themselves, or the first attempt and the retry land in different places. `KeyRotator.Next` takes a `tried` set so one request never tries the same key twice (a shared cache counter alone is not enough: concurrent requests steal each other's increments and retries end up reusing the key that just 429'd). A 429 puts that key in cooldown (`MarkRateLimited`, honours upstream `Retry-After`/Gemini `retryDelay`), which *deprioritises* it but never disables it: when every key is cooling, the one that recovers soonest is still used. When all keys fail, the last buffered upstream response is written back plus a `Retry-After` header. `KEY_COOLDOWN_SECONDS=0` disables cooldown.
 - Frontend `src/`: `views/` (Layout, Dashboard, Login), `components/` (KeyManager, LangSwitcher), `api/index.js` (axios), `router/index.js`, `i18n.js` + `locales/{en.json,zh-CN.json}`, `@` → `src`. Dev proxy rules live in `vite.config.js`.
 
 ## Deployment gotchas

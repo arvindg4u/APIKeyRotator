@@ -100,6 +100,8 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `JWT_SECRET` | 用于生成JWT令牌的密钥。 | `your_very_secret...` | `a_long_random_string` |
 | `GLOBAL_PROXY_KEYS` | 全局代理密钥，用逗号分隔。 | (空) | `key1,key2` |
 | `PROXY_TIMEOUT` | 代理请求的超时时间（秒）。 | `30` | `60` |
+| `KEY_COOLDOWN_SECONDS` | 上游返回 429 后该 Key 的冷却时长（秒）。上游返回 Retry-After 时以其为准。设置为 `0` 可关闭冷却。 | `60` | `120` |
+| `KEY_MAX_COOLDOWN_SECONDS` | 单次冷却的上限（秒）。 | `1800` | `600` |
 | `PROXY_PUBLIC_BASE_URL` | 服务的公共访问URL。 | `http://localhost:8000` | `https://your.domain.com` |
 | **数据库** | | | |
 | `DB_TYPE` | 数据库类型。 | `sqlite` | `mysql` |
