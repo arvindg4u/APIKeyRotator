@@ -66,6 +66,7 @@ type ProxyConfigResponse struct {
 	TargetBaseURL  *string         `json:"target_base_url,omitempty"`
 	APIFormat      *string         `json:"api_format,omitempty"`
 	OutputFormat   *string         `json:"output_format,omitempty"`
+	ExtraHeaders   *string         `json:"extra_headers,omitempty"`
 }
 
 // ToProxyConfigResponse 将模型转换为响应DTO
