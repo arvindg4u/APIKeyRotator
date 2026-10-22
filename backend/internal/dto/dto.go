@@ -32,6 +32,7 @@ type ProxyConfigCreate struct {
 	TargetBaseURL  *string `json:"target_base_url,omitempty"`
 	APIFormat      *string `json:"api_format,omitempty"`
 	OutputFormat   *string `json:"output_format,omitempty"`
+	ExtraHeaders   *string `json:"extra_headers,omitempty"`
 }
 
 // ProxyConfigStatusUpdate 更新代理配置状态的请求
@@ -81,6 +82,7 @@ func ToProxyConfigResponse(proxyConfig *models.ProxyConfig) ProxyConfigResponse 
 		TargetBaseURL: proxyConfig.TargetBaseURL,
 		APIFormat:     proxyConfig.APIFormat,
 		OutputFormat:  proxyConfig.OutputFormat,
+		ExtraHeaders:  proxyConfig.ExtraHeaders,
 	}
 
 	if proxyConfig.APIKeyLocation != nil {

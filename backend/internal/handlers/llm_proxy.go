@@ -203,6 +203,10 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 
 	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("LLM Proxy for '%s'", proxyConfig.Slug))
 
+	// 合并配置里的额外请求头 (例如自定义 User-Agent 绕过上游 WAF)，并保证带一个像样的 UA。
+	// 在循环外做一次即可: 后续每次尝试复用的是同一个 Headers map
+	services.ApplyUpstreamHeaders(target, proxyConfig, h.cfg)
+
 	// 没有配置注入位置时，换 Key 对上游请求没有任何影响，只尝试一次
 	keyName, keyLocation := services.ResolveUpstreamKeyTarget(proxyConfig, apiFormat)
 	injectEnabled := keyName != "" && keyLocation != ""
@@ -245,6 +249,11 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 			// 429：让这个 Key 冷却一段时间，后续请求优先使用其它 Key。
 			// 上游给出 Retry-After 时按上游建议的时间冷却。
 			rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(resp.Header, body))
+		} else if services.LooksLikeBlockPage(resp.StatusCode, body) {
+			// 403/401 且响应体不是 JSON: 基本可以断定是 WAF/CDN 拦截 (请求指纹被拦),
+			// 不是 Key 的问题，换 Key 也解决不了 —— 用 extra_headers 设置 User-Agent
+			logger.Errorf("LLM slug '%s': upstream returned %d with a non-JSON body, this looks like a WAF/CDN block rather than a bad key; set extra_headers (e.g. 'User-Agent: ...') for this config. Response: %s",
+				proxyConfig.Slug, resp.StatusCode, truncateForLog(body, 256))
 		}
 
 		logger.Warningf("LLM slug '%s': upstream returned %d for key %s, trying next key",

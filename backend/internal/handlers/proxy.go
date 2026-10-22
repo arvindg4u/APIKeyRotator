@@ -143,6 +143,9 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 
 	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("Generic Proxy for '%s'", proxyConfig.Slug))
 
+	// 合并配置里的额外请求头 (例如自定义 User-Agent 绕过上游 WAF)，并保证带一个像样的 UA
+	services.ApplyUpstreamHeaders(target, proxyConfig, h.cfg)
+
 	// 没有配置注入位置时，换 Key 对上游请求没有任何影响，只尝试一次
 	keyName, keyLocation := services.ResolveUpstreamKeyTarget(proxyConfig, "generic")
 	injectEnabled := keyName != "" && keyLocation != ""
@@ -184,6 +187,10 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 		if resp.StatusCode == http.StatusTooManyRequests {
 			// 429：让这个 Key 冷却一段时间，后续请求优先使用其它 Key
 			rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(resp.Header, body))
+		} else if services.LooksLikeBlockPage(resp.StatusCode, body) {
+			// 403/401 且响应体不是 JSON: 这是 WAF/CDN 拦截，不是 Key 的问题
+			logger.Errorf("Generic slug '%s': upstream returned %d with a non-JSON body, this looks like a WAF/CDN block rather than a bad key; set extra_headers (e.g. 'User-Agent: ...') for this config. Response: %s",
+				proxyConfig.Slug, resp.StatusCode, truncateForLog(body, 256))
 		}
 
 		logger.Warningf("Generic slug '%s': upstream returned %d for key %s, trying next key",
@@ -213,6 +220,17 @@ func (h *ProxyHandler) writeExhaustedResponse(c *gin.Context, rotator *services.
 	logger.Errorf("Generic slug '%s': no API key available to serve the request", proxyConfig.Slug)
 	c.JSON(http.StatusTooManyRequests, gin.H{"detail": "All API keys are rate limited, please try again later"})
 	return nil
+}
+
+// truncateForLog 把响应体裁剪成适合打进日志的一行文本 (拦截页通常是 HTML)
+func truncateForLog(body []byte, limit int) string {
+	text := strings.ReplaceAll(string(body), "\r", "")
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.TrimSpace(text)
+	if len(text) > limit {
+		text = text[:limit] + "...(truncated)"
+	}
+	return text
 }
 
 // retryAfterSeconds 把等待时长换算成 Retry-After 响应头需要的秒数 (向上取整，至少 1 秒)

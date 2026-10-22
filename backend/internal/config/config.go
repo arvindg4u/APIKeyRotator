@@ -13,6 +13,9 @@ const (
 	DefaultKeyCooldownSeconds = 60
 	// DefaultMaxKeyCooldownSeconds 单次冷却的上限 (秒)，避免上游给出超长的 Retry-After 把 Key 永久封存
 	DefaultMaxKeyCooldownSeconds = 1800
+	// DefaultUpstreamUserAgent 客户端没带 User-Agent 时使用的兜底 UA。
+	// 不填的话 Go 会发出 "Go-http-client/1.1"，不少 WAF/CDN 会直接拦截并返回 403。
+	DefaultUpstreamUserAgent = "Mozilla/5.0 (compatible; APIKeyRotator/1.0; +https://github.com/arvindg4u/APIKeyRotator)"
 )
 
 // Config 应用配置结构
@@ -49,6 +52,10 @@ type Config struct {
 	// 设置为 0 可以关闭冷却，退化为"每次请求纯轮询 + 失败即换下一个 Key"
 	KeyCooldownSeconds    int
 	KeyMaxCooldownSeconds int
+
+	// 上游请求的默认 User-Agent。
+	// 客户端没带 UA 时使用，避免发出 Go 默认的 "Go-http-client/1.1" 被 WAF/CDN 拦截。
+	UpstreamUserAgent string
 
 	// 日志配置
 	LogLevel string
@@ -101,6 +108,9 @@ func Load() *Config {
 		KeyCooldownSeconds:    getEnvAsInt("KEY_COOLDOWN_SECONDS", DefaultKeyCooldownSeconds),
 		KeyMaxCooldownSeconds: getEnvAsInt("KEY_MAX_COOLDOWN_SECONDS", DefaultMaxKeyCooldownSeconds),
 
+		// 客户端没带 User-Agent 时的兜底值
+		UpstreamUserAgent: getUpstreamUserAgent(),
+
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 	}
 
@@ -116,6 +126,15 @@ func getServerPort() string {
 		return value
 	}
 	return getEnv("BACKEND_PORT", "8000")
+}
+
+// getUpstreamUserAgent 解析转发给上游的默认 User-Agent。
+// 未设置该环境变量时使用内置默认值; 显式设置为空字符串则退回 Go 的默认 UA。
+func getUpstreamUserAgent() string {
+	if value, ok := os.LookupEnv("UPSTREAM_USER_AGENT"); ok {
+		return value
+	}
+	return DefaultUpstreamUserAgent
 }
 
 // buildDatabaseURL 构建数据库连接字符串
