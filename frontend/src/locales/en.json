@@ -72,6 +72,9 @@
             "keyName": "Key Name",
             "keyNamePlaceholder": "e.g., Authorization or access_key",
             "keyNamePlaceholderOptional": "Leave blank to use adapter default",
+            "extraHeaders": "Extra Headers",
+            "extraHeadersPlaceholder": "User-Agent: curl/8.4.0",
+            "extraHeadersHelpText": "Extra headers forwarded to the upstream API, one per line as 'Name: value' (a JSON object also works). Use this to set a custom User-Agent when a firewall/CDN in front of the upstream blocks the request with 403.",
             "validation": {
                 "type": "Please select a service type",
                 "name": "Please enter a service name",

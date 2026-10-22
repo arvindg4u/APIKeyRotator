@@ -102,6 +102,7 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `PROXY_TIMEOUT` | Proxy request timeout in seconds. | `30` | `60` |
 | `KEY_COOLDOWN_SECONDS` | How long a key is deprioritized after the upstream returns 429. A `Retry-After` from the upstream wins over this. `0` disables cooldown. | `60` | `120` |
 | `KEY_MAX_COOLDOWN_SECONDS` | Upper bound for a single cooldown. | `1800` | `600` |
+| `UPSTREAM_USER_AGENT` | User-Agent sent upstream when the client does not send one. The Go default (`Go-http-client/1.1`) is blocked by many WAFs/CDNs with a 403 before the request reaches the model. | `Mozilla/5.0 (compatible; APIKeyRotator/1.0...)` | `curl/8.4.0` |
 | `PROXY_PUBLIC_BASE_URL` | Public access URL for the service. | `http://localhost:8000` | `https://your.domain.com` |
 | **Database** | | | |
 | `DB_TYPE` | Database type. | `sqlite` | `mysql` |

@@ -25,6 +25,10 @@ type ProxyConfig struct {
 	APIFormat     *string `json:"api_format,omitempty" gorm:"size:50;default:openai_compatible"`
 	OutputFormat  *string `json:"output_format,omitempty" gorm:"size:50;default:none"`
 
+	// ExtraHeaders 额外转发给上游的请求头，内容为 JSON 对象或 "名字: 值" 多行文本。
+	// 典型用途: 上游有 WAF/CDN 时自定义 User-Agent, 避免请求被 403 拦截。
+	ExtraHeaders *string `json:"extra_headers,omitempty" gorm:"type:text"`
+
 	// 关系: 一个配置可以有多个 API Key
 	APIKeys []APIKey `json:"api_keys" gorm:"foreignKey:ProxyConfigID;constraint:OnDelete:CASCADE"`
 }

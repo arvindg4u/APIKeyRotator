@@ -155,6 +155,21 @@
         <el-form-item :label="$t('dashboard.form.keyName')" prop="api_key_name">
           <el-input v-model="configForm.api_key_name" :placeholder="llmKeyNamePlaceholder" />
         </el-form-item>
+
+        <el-form-item prop="extra_headers">
+          <template #label>
+            {{ $t('dashboard.form.extraHeaders') }}
+            <el-tooltip :content="$t('dashboard.form.extraHeadersHelpText')" placement="top" :show-after="200">
+              <el-icon class="help-icon"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
+          <el-input
+            v-model="configForm.extra_headers"
+            type="textarea"
+            :rows="3"
+            :placeholder="$t('dashboard.form.extraHeadersPlaceholder')"
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
@@ -229,7 +244,8 @@ const initialFormState = {
   target_url: '',
   target_base_url: '',
   api_key_location: 'header',
-  api_key_name: ''
+  api_key_name: '',
+  extra_headers: ''
 }
 const configForm = reactive({ ...initialFormState })
 
@@ -301,6 +317,7 @@ const submitForm = async () => {
           target_url: configForm.config_type === 'GENERIC' ? configForm.target_url : null,
           api_key_location: configForm.api_key_location,
           api_key_name: configForm.api_key_name,
+          extra_headers: configForm.extra_headers || null,
           api_format: configForm.config_type === 'LLM' ? configForm.api_format : null,
           output_format: configForm.config_type === 'LLM' ? configForm.output_format : null,
           target_base_url: configForm.config_type === 'LLM' ? configForm.target_base_url : null,

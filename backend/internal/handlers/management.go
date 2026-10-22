@@ -84,6 +84,7 @@ func (h *ManagementHandler) CreateConfig(c *gin.Context) {
 		TargetBaseURL:  req.TargetBaseURL,
 		APIFormat:      req.APIFormat,
 		OutputFormat:   req.OutputFormat,
+		ExtraHeaders:   req.ExtraHeaders,
 	}
 
 	if err := h.dbRepo.CreateProxyConfig(config); err != nil {
@@ -167,6 +168,7 @@ func (h *ManagementHandler) UpdateConfig(c *gin.Context) {
 	config.TargetBaseURL = req.TargetBaseURL
 	config.APIFormat = req.APIFormat
 	config.OutputFormat = req.OutputFormat
+	config.ExtraHeaders = req.ExtraHeaders
 
 	if err := h.dbRepo.UpdateProxyConfig(config); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

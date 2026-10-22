@@ -72,6 +72,9 @@
             "keyName": "密钥名称",
             "keyNamePlaceholder": "例如：Authorization 或 access_key",
             "keyNamePlaceholderOptional": "留空则使用适配器默认配置",
+            "extraHeaders": "额外请求头",
+            "extraHeadersPlaceholder": "User-Agent: curl/8.4.0",
+            "extraHeadersHelpText": "转发给上游的额外请求头，每行一个「名称: 值」（也支持 JSON 对象）。当上游前面的防火墙/CDN 拦截请求返回 403 时，可以用它设置自定义 User-Agent。",
             "validation": {
                 "type": "请选择服务类型",
                 "name": "请输入服务名称",

@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -167,6 +168,120 @@ func InjectUpstreamKey(target *TargetRequest, proxyConfig *models.ProxyConfig, a
 	}
 
 	return true
+}
+
+// defaultUserAgentHeader User-Agent 响应头的规范写法
+const defaultUserAgentHeader = "User-Agent"
+
+// setHeader 写入请求头，先删掉只差大小写的同名项，
+// 避免 "user-agent" 与 "User-Agent" 同时进入 http.Header 造成取值不确定
+func setHeader(headers map[string]string, name, value string) {
+	for key := range headers {
+		if key != name && strings.EqualFold(key, name) {
+			delete(headers, key)
+		}
+	}
+	headers[name] = value
+}
+
+// hasHeader 判断请求头里是否已有某个头 (忽略大小写)
+func hasHeader(headers map[string]string, name string) bool {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseExtraHeaders 解析配置里保存的额外请求头。
+// 支持两种写法:
+//
+//	{"User-Agent": "curl/8.4.0", "X-Foo": "bar"}   (JSON 对象)
+//	User-Agent: curl/8.4.0                        (每行一个 "名字: 值"，# 开头为注释)
+//
+// 解析失败时返回空集合，不影响主流程。
+func ParseExtraHeaders(raw *string) map[string]string {
+	headers := make(map[string]string)
+	if raw == nil {
+		return headers
+	}
+
+	value := strings.TrimSpace(*raw)
+	if value == "" {
+		return headers
+	}
+
+	if strings.HasPrefix(value, "{") {
+		var parsed map[string]string
+		if err := json.Unmarshal([]byte(value), &parsed); err == nil {
+			for name, headerValue := range parsed {
+				name = strings.TrimSpace(name)
+				if name != "" {
+					headers[name] = headerValue
+				}
+			}
+			return headers
+		}
+	}
+
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, headerValue, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		headers[name] = strings.TrimSpace(headerValue)
+	}
+
+	return headers
+}
+
+// ApplyUpstreamHeaders 把配置里的额外请求头合并到即将转发的请求上，并保证带一个像样的 User-Agent。
+//
+// 优先级: 配置里的 extra_headers > 客户端自带的请求头 > 全局默认 UA。
+// 上游返回 403 且响应体不是 JSON 时通常是 WAF/CDN 拦截，
+// 用 extra_headers 设置 User-Agent (或其它指纹相关头) 往往就能解决。
+func ApplyUpstreamHeaders(target *TargetRequest, proxyConfig *models.ProxyConfig, cfg *config.Config) {
+	if target == nil {
+		return
+	}
+	if target.Headers == nil {
+		target.Headers = make(map[string]string)
+	}
+
+	if proxyConfig != nil {
+		for name, value := range ParseExtraHeaders(proxyConfig.ExtraHeaders) {
+			setHeader(target.Headers, name, value)
+		}
+	}
+
+	// 客户端没带 UA 时补上默认值: Go 默认的 "Go-http-client/1.1" 会被很多 WAF 直接拦掉
+	if !hasHeader(target.Headers, defaultUserAgentHeader) && cfg != nil && cfg.UpstreamUserAgent != "" {
+		setHeader(target.Headers, defaultUserAgentHeader, cfg.UpstreamUserAgent)
+	}
+}
+
+// LooksLikeBlockPage 判断错误响应是否像 WAF/CDN 的拦截页。
+// 这类响应不是 API 返回的业务错误，换 Key 也解决不了，通常是请求头/指纹被拦。
+func LooksLikeBlockPage(statusCode int, body []byte) bool {
+	if statusCode != http.StatusForbidden && statusCode != http.StatusUnauthorized {
+		return false
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false
+	}
+	// JSON 是各家 API 正常的错误格式
+	return trimmed[0] != '{' && trimmed[0] != '['
 }
 
 // ValidateSlug 验证slug格式

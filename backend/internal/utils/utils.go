@@ -40,11 +40,17 @@ func MaskAPIKeyDefault(keyValue string) string {
 }
 
 // FilterRequestHeaders 过滤请求头，移除不应该转发的头部
+//
+// 注意: User-Agent 不属于逐跳头，不会被过滤。
+// 之前它被一起丢掉，导致所有上游请求都带着 Go 默认的 "Go-http-client/1.1" 发出去，
+// 而很多 WAF/CDN (Cloudflare 等) 会把这个 UA 直接拦掉并返回 403，
+// 看起来就像"Key 失效"，实际上请求根本没到模型。
+// 客户端的 UA 现在会原样转发；需要固定 UA 时用配置里的 extra_headers 覆盖即可。
 func FilterRequestHeaders(headers map[string][]string, headersToRemove []string) map[string]string {
 	// 这些是不能从客户端透传给上游服务器的Header
 	hopByHopHeaders := []string{
 		"host", "content-length", "transfer-encoding", "connection",
-		"keep-alive", "te", "upgrade", "user-agent",
+		"keep-alive", "te", "upgrade",
 	}
 
 	// 合并通用的逐跳头和特定需要移除的头
