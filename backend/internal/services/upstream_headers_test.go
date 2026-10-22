@@ -108,6 +108,65 @@ func TestApplyUpstreamHeadersNilTarget(t *testing.T) {
 	ApplyUpstreamHeaders(nil, &models.ProxyConfig{}, &config.Config{UpstreamUserAgent: "agent"})
 }
 
+func TestApplyUpstreamHeadersEmptyClientUserAgentUsesDefault(t *testing.T) {
+	// 客户端发来空的 User-Agent 时, Go 根本不会把这个头发给上游,
+	// 上游看到的就是"没有 UA" —— 必须当成客户端没带 UA 来处理
+	target := &TargetRequest{Headers: map[string]string{"User-Agent": "", "Content-Type": "application/json"}}
+	cfg := &config.Config{UpstreamUserAgent: "fallback-agent"}
+
+	ApplyUpstreamHeaders(target, &models.ProxyConfig{}, cfg)
+
+	if got := target.Headers["User-Agent"]; got != "fallback-agent" {
+		t.Fatalf("User-Agent = %q, want %q", got, "fallback-agent")
+	}
+}
+
+func TestApplySafeUserAgentReplacesClientUserAgent(t *testing.T) {
+	// 客户端的 UA 被 WAF 拦了: 换成兜底 UA 再试一次
+	target := &TargetRequest{Headers: map[string]string{"User-Agent": "Hermes/1.0"}}
+	cfg := &config.Config{WAFRetryUserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0"}
+
+	if !ApplySafeUserAgent(target, cfg) {
+		t.Fatal("ApplySafeUserAgent() = false, want true")
+	}
+	if got := target.Headers["User-Agent"]; got != cfg.WAFRetryUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, cfg.WAFRetryUserAgent)
+	}
+}
+
+func TestApplySafeUserAgentOverwritesExtraHeadersUserAgent(t *testing.T) {
+	// extra_headers 里的 UA 同样被拦时, 兜底 UA 必须能覆盖它
+	target := &TargetRequest{Headers: map[string]string{"user-agent": "curl/8.4.0"}}
+	cfg := &config.Config{WAFRetryUserAgent: "fallback-agent"}
+
+	if !ApplySafeUserAgent(target, cfg) {
+		t.Fatal("ApplySafeUserAgent() = false, want true")
+	}
+	if got := target.Headers["User-Agent"]; got != "fallback-agent" {
+		t.Fatalf("User-Agent = %q, want %q", got, "fallback-agent")
+	}
+	if len(target.Headers) != 1 {
+		t.Fatalf("headers = %v, want exactly one entry (no case-duplicates)", target.Headers)
+	}
+}
+
+func TestApplySafeUserAgentNoopCases(t *testing.T) {
+	// 没有兜底 UA 时不能重试
+	target := &TargetRequest{Headers: map[string]string{"User-Agent": "Hermes/1.0"}}
+	if ApplySafeUserAgent(target, &config.Config{}) {
+		t.Fatal("ApplySafeUserAgent() = true without a configured UA, want false")
+	}
+
+	// 已经是兜底 UA 时再试一次没有意义
+	same := &TargetRequest{Headers: map[string]string{"User-Agent": "fallback-agent"}}
+	if ApplySafeUserAgent(same, &config.Config{WAFRetryUserAgent: "fallback-agent"}) {
+		t.Fatal("ApplySafeUserAgent() = true with an identical UA, want false")
+	}
+
+	// 防御: target 为空时不能 panic
+	ApplySafeUserAgent(nil, &config.Config{WAFRetryUserAgent: "fallback-agent"})
+}
+
 func TestLooksLikeBlockPage(t *testing.T) {
 	tests := []struct {
 		name       string

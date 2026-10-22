@@ -154,6 +154,9 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 	tried := make(map[string]bool)
 	var lastRetryable *services.BufferedResponse
 
+	// wafRetried 记录是否已经用兜底 UA 重试过 (WAF 拦截与 Key 无关, 重试一次就够)
+	wafRetried := false
+
 	for {
 		selected, err := rotator.Next(proxyConfig, tried)
 		if err != nil {
@@ -191,6 +194,25 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 			// 403/401 且响应体不是 JSON: 这是 WAF/CDN 拦截，不是 Key 的问题
 			logger.Errorf("Generic slug '%s': upstream returned %d with a non-JSON body, this looks like a WAF/CDN block rather than a bad key; set extra_headers (e.g. 'User-Agent: ...') for this config. Response: %s",
 				proxyConfig.Slug, resp.StatusCode, truncateForLog(body, 256))
+
+			// 拦截多半来自客户端的 UA 指纹: 先用兜底 UA 把同一个 Key 再试一次
+			if !wafRetried && h.cfg.UpstreamWAFRetry && services.ApplySafeUserAgent(target, h.cfg) {
+				wafRetried = true
+				logger.Warningf("Generic slug '%s': retrying the same upstream key with a fallback User-Agent after a WAF/CDN block",
+					proxyConfig.Slug)
+
+				resp, err = h.doGenericUpstreamRequest(c, client, target)
+				if err != nil {
+					return err
+				}
+				if !services.IsRetryableStatus(resp.StatusCode) {
+					return h.writeGenericResponse(c, resp)
+				}
+
+				body, _ = io.ReadAll(io.LimitReader(resp.Body, services.MaxBufferedErrorBody))
+				resp.Body.Close()
+				lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
+			}
 		}
 
 		logger.Warningf("Generic slug '%s': upstream returned %d for key %s, trying next key",
@@ -293,7 +315,7 @@ func (h *ProxyHandler) doGenericUpstreamRequest(c *gin.Context, client *http.Cli
 		req.Header.Set(key, value)
 	}
 
-	logger.Infof("Forwarding request to: %s %s", req.Method, req.URL.String())
+	logger.Infof("Forwarding request to: %s %s (User-Agent: %q)", req.Method, req.URL.String(), req.Header.Get("User-Agent"))
 
 	// 发送请求
 	resp, err := client.Do(req)

@@ -16,6 +16,9 @@ const (
 	// DefaultUpstreamUserAgent 客户端没带 User-Agent 时使用的兜底 UA。
 	// 不填的话 Go 会发出 "Go-http-client/1.1"，不少 WAF/CDN 会直接拦截并返回 403。
 	DefaultUpstreamUserAgent = "Mozilla/5.0 (compatible; APIKeyRotator/1.0; +https://github.com/arvindg4u/APIKeyRotator)"
+	// DefaultWAFRetryUserAgent 命中 WAF 拦截页 (403/401 + 非 JSON) 时重试使用的 UA。
+	// 拦截是请求指纹 (通常是客户端 UA) 的问题，换 Key 没用，换成普通浏览器 UA 再试一次往往就通了。
+	DefaultWAFRetryUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
 
 // Config 应用配置结构
@@ -56,6 +59,13 @@ type Config struct {
 	// 上游请求的默认 User-Agent。
 	// 客户端没带 UA 时使用，避免发出 Go 默认的 "Go-http-client/1.1" 被 WAF/CDN 拦截。
 	UpstreamUserAgent string
+
+	// 命中 WAF 拦截页时重试使用的 User-Agent。
+	// 显式设置为空字符串可以关闭这个重试。
+	WAFRetryUserAgent string
+
+	// 是否在命中 WAF 拦截页时用 WAFRetryUserAgent 重试一次。
+	UpstreamWAFRetry bool
 
 	// 日志配置
 	LogLevel string
@@ -111,6 +121,10 @@ func Load() *Config {
 		// 客户端没带 User-Agent 时的兜底值
 		UpstreamUserAgent: getUpstreamUserAgent(),
 
+		// 命中 WAF 拦截页时的重试 UA，以及是否启用这个重试
+		WAFRetryUserAgent: getWAFRetryUserAgent(),
+		UpstreamWAFRetry:  getUpstreamWAFRetry(),
+
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 	}
 
@@ -135,6 +149,29 @@ func getUpstreamUserAgent() string {
 		return value
 	}
 	return DefaultUpstreamUserAgent
+}
+
+// getWAFRetryUserAgent 解析命中 WAF 拦截页时重试使用的 User-Agent。
+// 未设置该环境变量时使用内置的浏览器 UA; 显式设置为空字符串表示不做这个重试。
+func getWAFRetryUserAgent() string {
+	if value, ok := os.LookupEnv("WAF_RETRY_USER_AGENT"); ok {
+		return value
+	}
+	return DefaultWAFRetryUserAgent
+}
+
+// getUpstreamWAFRetry 解析是否启用 "命中 WAF 拦截页后换 UA 重试一次"。
+// 默认启用; 设置为 false/0/no/off 可以关掉。
+func getUpstreamWAFRetry() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("UPSTREAM_WAF_RETRY")))
+	switch value {
+	case "":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 // buildDatabaseURL 构建数据库连接字符串

@@ -184,14 +184,26 @@ func setHeader(headers map[string]string, name, value string) {
 	headers[name] = value
 }
 
-// hasHeader 判断请求头里是否已有某个头 (忽略大小写)
-func hasHeader(headers map[string]string, name string) bool {
-	for key := range headers {
-		if strings.EqualFold(key, name) {
+// hasNonEmptyHeader 判断请求头里是否已有某个头且值非空 (忽略大小写)。
+// 客户端发来 "User-Agent:" (空值) 时，Go 会直接不发这个头，
+// 上游看到的就等于"没有 UA"，一样会被 WAF 拦掉，所以要当成没有 UA 处理。
+func hasNonEmptyHeader(headers map[string]string, name string) bool {
+	for key, value := range headers {
+		if strings.EqualFold(key, name) && strings.TrimSpace(value) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+// headerValue 读取请求头里的值 (忽略大小写)，没有则返回空字符串
+func headerValue(headers map[string]string, name string) string {
+	for key, value := range headers {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
 }
 
 // ParseExtraHeaders 解析配置里保存的额外请求头。
@@ -264,9 +276,38 @@ func ApplyUpstreamHeaders(target *TargetRequest, proxyConfig *models.ProxyConfig
 	}
 
 	// 客户端没带 UA 时补上默认值: Go 默认的 "Go-http-client/1.1" 会被很多 WAF 直接拦掉
-	if !hasHeader(target.Headers, defaultUserAgentHeader) && cfg != nil && cfg.UpstreamUserAgent != "" {
+	if !hasNonEmptyHeader(target.Headers, defaultUserAgentHeader) && cfg != nil && cfg.UpstreamUserAgent != "" {
 		setHeader(target.Headers, defaultUserAgentHeader, cfg.UpstreamUserAgent)
 	}
+}
+
+// ApplySafeUserAgent 把请求头里的 User-Agent 换成兜底 UA (无视 extra_headers 里的设置)。
+//
+// 用途: 上游返回 WAF/CDN 拦截页 (403/401 + 非 JSON 响应体) 时，拦截多半来自
+// 客户端的 UA 指纹，跟 Key 无关 —— 换 Key 没有任何意义，换成兜底 UA 再试一次往往就通了。
+//
+// 返回 false 表示不需要 (也没有办法) 重试:
+//   - 没有配置兜底 UA
+//   - 当前已经是这个 UA 了 (再试一次结果不会变)
+func ApplySafeUserAgent(target *TargetRequest, cfg *config.Config) bool {
+	if target == nil || cfg == nil {
+		return false
+	}
+
+	userAgent := strings.TrimSpace(cfg.WAFRetryUserAgent)
+	if userAgent == "" {
+		return false
+	}
+
+	if strings.EqualFold(strings.TrimSpace(headerValue(target.Headers, defaultUserAgentHeader)), userAgent) {
+		return false
+	}
+
+	if target.Headers == nil {
+		target.Headers = make(map[string]string)
+	}
+	setHeader(target.Headers, defaultUserAgentHeader, userAgent)
+	return true
 }
 
 // LooksLikeBlockPage 判断错误响应是否像 WAF/CDN 的拦截页。
