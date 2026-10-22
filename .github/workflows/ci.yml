@@ -1,0 +1,63 @@
+name: CI
+
+# 这个工作流存在的理由: 之前一次改动里的编译错误一路合进了 master,
+# 直到 Render 上 docker build 才发现 (backend-builder 阶段直接失败)。
+# 现在每次 push / PR 都会先编译并跑测试, 编译不过就不允许合入。
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (go build + vet + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: backend/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      # 注意: sqlite 驱动需要 CGO, 这里保持默认开启 (ubuntu runner 自带 gcc)
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  frontend:
+    name: Frontend (pnpm build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # README 里说明过: 必须用 pnpm v9, v10+ 会破坏 esbuild/vue-demi 的 postinstall
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build
+        run: pnpm run build
