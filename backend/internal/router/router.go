@@ -82,7 +82,7 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 	})
 
 	// 创建处理器实例，使用完整版本
-	managementHandler := handlers.NewManagementHandler(cfg, dbRepo)
+	managementHandler := handlers.NewManagementHandler(cfg, dbRepo, cacheInterface)
 	proxyHandler := handlers.NewProxyHandler(cfg, dbRepo.GetDB(), cacheInterface)
 	llmProxyHandler := handlers.NewLLMProxyHandler(cfg, dbRepo.GetDB(), cacheInterface)
 

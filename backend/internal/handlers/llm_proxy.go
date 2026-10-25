@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"api-key-rotator/backend/internal/adapters"
 	"api-key-rotator/backend/internal/config"
@@ -64,6 +63,12 @@ func (h *LLMProxyHandler) HandleLLMProxy(c *gin.Context) {
 	// 转发请求，传入proxyConfig以支持响应格式转换
 	if err := h.forwardLLMRequest(c, targetRequest, proxyConfig); err != nil {
 		logger.Errorf("An unexpected error occurred in LlmApiProxyHandler for slug '%s': %v", slug, err)
+		// 流式响应一旦开始写，就不能再追加一个 JSON 错误体，
+		// 否则客户端会收到 "半截 SSE + JSON" 的损坏响应。
+		if c.Writer.Written() {
+			c.Abort()
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"detail": "Bad Gateway"})
 		return
 	}
@@ -196,10 +201,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		}
 	}
 
-	client := &http.Client{}
-	if h.cfg.ProxyTimeout > 0 {
-		client.Timeout = time.Duration(h.cfg.ProxyTimeout) * time.Second
-	}
+	client := newUpstreamHTTPClient(h.cfg.ProxyTimeout)
 
 	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("LLM Proxy for '%s'", proxyConfig.Slug))
 
@@ -236,7 +238,12 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 
 		resp, err := h.doUpstreamLLMRequest(client, target)
 		if err != nil {
-			return err
+			logger.Errorf("LLM slug '%s': upstream request failed for key %s: %v",
+				proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue), err)
+			if !injectEnabled {
+				return err
+			}
+			continue
 		}
 
 		if !services.IsRetryableStatus(resp.StatusCode) {
@@ -422,19 +429,26 @@ func (h *LLMProxyHandler) writeLLMResponse(c *gin.Context, resp *http.Response, 
 
 // forwardStreamDirect 直接透传流式响应
 func (h *LLMProxyHandler) forwardStreamDirect(c *gin.Context, body io.Reader) error {
+	var streamErr error
 	c.Stream(func(w io.Writer) bool {
 		buffer := make([]byte, 1024)
 		n, err := body.Read(buffer)
+		if n > 0 {
+			if _, werr := w.Write(buffer[:n]); werr != nil {
+				streamErr = werr
+				return false
+			}
+		}
 		if err != nil {
 			if err != io.EOF {
+				streamErr = err
 				logger.Errorf("Error reading stream: %v", err)
 			}
 			return false
 		}
-		_, err = w.Write(buffer[:n])
-		return err == nil
+		return true
 	})
-	return nil
+	return streamErr
 }
 
 // forwardStreamWithConversion 带格式转换的流式响应
@@ -444,23 +458,36 @@ func (h *LLMProxyHandler) forwardStreamWithConversion(c *gin.Context, body io.Re
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
+	var streamErr error
+	writeAll := func(w io.Writer, chunks ...[]byte) bool {
+		for _, chunk := range chunks {
+			if _, err := w.Write(chunk); err != nil {
+				streamErr = err
+				return false
+			}
+		}
+		return true
+	}
+	writeEndEvents := func(w io.Writer) bool {
+		for _, event := range converter.GetStreamEndEvents() {
+			if !writeAll(w, []byte("data: "), event, []byte("\n\n")) {
+				return false
+			}
+		}
+		return true
+	}
+
 	c.Stream(func(w io.Writer) bool {
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {
+				streamErr = err
 				logger.Errorf("Error scanning stream: %v", err)
+				// 上游流被截断时不要再补一个 "成功结束" 事件，
+				// 否则客户端会把半截响应当成完整响应。
+				return false
 			}
-			// 流结束: 写入目标格式所需的结束事件 (如 OpenAI 的 [DONE])
-			for _, event := range converter.GetStreamEndEvents() {
-				if _, err := w.Write([]byte("data: ")); err != nil {
-					return false
-				}
-				if _, err := w.Write(event); err != nil {
-					return false
-				}
-				if _, err := w.Write([]byte("\n\n")); err != nil {
-					return false
-				}
-			}
+			// 流正常结束: 写入目标格式所需的结束事件 (如 OpenAI 的 [DONE])
+			writeEndEvents(w)
 			return false
 		}
 
@@ -468,8 +495,7 @@ func (h *LLMProxyHandler) forwardStreamWithConversion(c *gin.Context, body io.Re
 
 		// 跳过空行
 		if strings.TrimSpace(line) == "" {
-			w.Write([]byte("\n"))
-			return true
+			return writeAll(w, []byte("\n"))
 		}
 
 		// 处理SSE数据行
@@ -479,17 +505,7 @@ func (h *LLMProxyHandler) forwardStreamWithConversion(c *gin.Context, body io.Re
 			// 处理 [DONE] 信号
 			if payload == "[DONE]" {
 				// 上游结束信号: 写入目标格式所需的结束事件并结束流
-				for _, event := range converter.GetStreamEndEvents() {
-					if _, err := w.Write([]byte("data: ")); err != nil {
-						return false
-					}
-					if _, err := w.Write(event); err != nil {
-						return false
-					}
-					if _, err := w.Write([]byte("\n\n")); err != nil {
-						return false
-					}
-				}
+				writeEndEvents(w)
 				return false
 			}
 
@@ -498,8 +514,7 @@ func (h *LLMProxyHandler) forwardStreamWithConversion(c *gin.Context, body io.Re
 			if err != nil {
 				logger.Errorf("Failed to convert stream chunk: %v", err)
 				// 转换失败时透传原始数据
-				w.Write([]byte(line + "\n"))
-				return true
+				return writeAll(w, []byte(line+"\n"))
 			}
 
 			// 如果转换结果为nil，跳过这个chunk
@@ -508,18 +523,14 @@ func (h *LLMProxyHandler) forwardStreamWithConversion(c *gin.Context, body io.Re
 			}
 
 			// 写入转换后的数据
-			w.Write([]byte("data: "))
-			w.Write(convertedPayload)
-			w.Write([]byte("\n\n"))
-			return true
+			return writeAll(w, []byte("data: "), convertedPayload, []byte("\n\n"))
 		}
 
 		// 其他行（如event:, id:等）直接透传
-		w.Write([]byte(line + "\n"))
-		return true
+		return writeAll(w, []byte(line+"\n"))
 	})
 
-	return nil
+	return streamErr
 }
 
 // extractModelFromBody extracts the model name from a request body

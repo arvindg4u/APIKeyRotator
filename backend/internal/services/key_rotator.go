@@ -49,7 +49,9 @@ func NewKeyRotator(cfg *config.Config, cacheClient cache.CacheInterface, logPref
 	}
 }
 
-// cooldownEnabled 是否启用了冷却机制 (KEY_COOLDOWN_SECONDS <= 0 或缓存不可用时自动关闭)
+// cooldownEnabled 是否启用了冷却机制 (KEY_COOLDOWN_SECONDS <= 0 时关闭)。
+// 缓存不可达不会关闭冷却：RemainingCooldown/MarkRateLimited 会退回到进
+// 程内兜底存储，并限频记录缓存故障。
 func (r *KeyRotator) cooldownEnabled() bool {
 	return r != nil && r.cacheClient != nil && r.cfg != nil && r.cfg.KeyCooldownSeconds > 0
 }
@@ -72,19 +74,33 @@ func (r *KeyRotator) RemainingCooldown(configID int32, keyValue string) time.Dur
 		return 0
 	}
 
-	raw, err := r.cacheClient.Get(context.Background(), r.cooldownCacheKey(configID, keyValue))
-	if err != nil || raw == "" {
-		return 0
+	cacheKey := r.cooldownCacheKey(configID, keyValue)
+
+	// 进程内兜底值始终参与比较。缓存正常时它通常与缓存值相同；
+	// 缓存故障时它是唯一还能阻止 "刚 429 的 Key 立刻又被选中" 的状态。
+	remaining := fallbackCooldownRemaining(cacheKey)
+
+	raw, err := r.cacheClient.Get(context.Background(), cacheKey)
+	if err != nil {
+		if !errors.Is(err, cache.ErrNotFound) {
+			warnCacheFailure(r.logPrefix, "cooldown read", err)
+		}
+		return remaining
+	}
+	if raw == "" {
+		return remaining
 	}
 
 	expiresAt, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil {
-		return 0
+		logger.Warningf("%s: invalid cooldown value in cache for key %s: %q",
+			r.logPrefix, utils.MaskAPIKeyDefault(keyValue), raw)
+		return remaining
 	}
 
-	remaining := time.Until(time.Unix(expiresAt, 0))
-	if remaining <= 0 {
-		return 0
+	cacheRemaining := time.Until(time.Unix(expiresAt, 0))
+	if cacheRemaining > remaining {
+		return cacheRemaining
 	}
 	return remaining
 }
@@ -109,12 +125,14 @@ func (r *KeyRotator) MarkRateLimited(configID int32, keyValue string, retryAfter
 		}
 	}
 
-	ctx := context.Background()
-	expiresAt := time.Now().Add(cooldown).Unix()
-	if err := r.cacheClient.Set(ctx, r.cooldownCacheKey(configID, keyValue), expiresAt, cooldown); err != nil {
-		logger.Warningf("%s: failed to record rate-limit cooldown: %v", r.logPrefix, err)
-		return
+	cacheKey := r.cooldownCacheKey(configID, keyValue)
+	expiresAt := time.Now().Add(cooldown)
+	if err := r.cacheClient.Set(context.Background(), cacheKey, expiresAt.Unix(), cooldown); err != nil {
+		// 缓存写入失败时不能放弃冷却：否则这个刚被 429 的 Key 会在下一次
+		// 选择时立刻重新变成 "健康"，轮换机制就失效了。
+		warnCacheFailure(r.logPrefix, "cooldown write", err)
 	}
+	setFallbackCooldown(cacheKey, expiresAt)
 
 	logger.Warningf("%s: key %s is cooling down for %s (status 429)",
 		r.logPrefix, utils.MaskAPIKeyDefault(keyValue), cooldown)
@@ -125,8 +143,10 @@ func (r *KeyRotator) ClearCooldown(configID int32, keyValue string) {
 	if !r.cooldownEnabled() {
 		return
 	}
-	if _, err := r.cacheClient.Del(context.Background(), r.cooldownCacheKey(configID, keyValue)); err != nil {
-		logger.Warningf("%s: failed to clear rate-limit cooldown: %v", r.logPrefix, err)
+	cacheKey := r.cooldownCacheKey(configID, keyValue)
+	clearFallbackCooldown(cacheKey)
+	if _, err := r.cacheClient.Del(context.Background(), cacheKey); err != nil {
+		warnCacheFailure(r.logPrefix, "cooldown delete", err)
 	}
 }
 

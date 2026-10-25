@@ -7,24 +7,28 @@ import (
 	"api-key-rotator/backend/internal/auth"
 	"api-key-rotator/backend/internal/config"
 	"api-key-rotator/backend/internal/dto"
+	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/infrastructure/database"
 	"api-key-rotator/backend/internal/logger"
 	"api-key-rotator/backend/internal/models"
+	"api-key-rotator/backend/internal/services"
 
 	"github.com/gin-gonic/gin"
 )
 
 // ManagementHandler 管理API处理器 - 使用接口抽象架构
 type ManagementHandler struct {
-	cfg    *config.Config
-	dbRepo database.Repository
+	cfg         *config.Config
+	dbRepo      database.Repository
+	cacheClient cache.CacheInterface
 }
 
 // NewManagementHandler 创建管理处理器实例
-func NewManagementHandler(cfg *config.Config, dbRepo database.Repository) *ManagementHandler {
+func NewManagementHandler(cfg *config.Config, dbRepo database.Repository, cacheClient cache.CacheInterface) *ManagementHandler {
 	return &ManagementHandler{
-		cfg:    cfg,
-		dbRepo: dbRepo,
+		cfg:         cfg,
+		dbRepo:      dbRepo,
+		cacheClient: cacheClient,
 	}
 }
 
@@ -336,6 +340,12 @@ func (h *ManagementHandler) UpdateAPIKeyStatus(c *gin.Context) {
 	if err := h.dbRepo.UpdateAPIKey(apiKey); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 重新启用 Key 时清除其冷却状态，避免继续被降权
+	if req.IsActive && h.cacheClient != nil {
+		rotator := services.NewKeyRotator(h.cfg, h.cacheClient, "Management")
+		rotator.ClearCooldown(int32(apiKey.ProxyConfigID), apiKey.KeyValue)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "API key status updated successfully"})

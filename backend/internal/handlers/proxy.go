@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/config"
+	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/logger"
 	"api-key-rotator/backend/internal/models"
 	"api-key-rotator/backend/internal/services"
@@ -24,16 +24,16 @@ import (
 
 // ProxyHandler 通用代理处理器
 type ProxyHandler struct {
-	cfg        *config.Config
-	db         *gorm.DB
+	cfg         *config.Config
+	db          *gorm.DB
 	cacheClient cache.CacheInterface
 }
 
 // NewProxyHandler 创建通用代理处理器实例
 func NewProxyHandler(cfg *config.Config, db *gorm.DB, cacheClient cache.CacheInterface) *ProxyHandler {
 	return &ProxyHandler{
-		cfg:        cfg,
-		db:         db,
+		cfg:         cfg,
+		db:          db,
 		cacheClient: cacheClient,
 	}
 }
@@ -67,6 +67,10 @@ func (h *ProxyHandler) HandleGenericProxy(c *gin.Context) {
 	// 转发请求，传入proxyConfig以支持 429 时换 Key 重试
 	if err := h.forwardRequest(c, targetRequest, proxyConfig); err != nil {
 		logger.Errorf("An unexpected error occurred in GenericApiProxyHandler for slug '%s': %v", serviceSlug, err)
+		if c.Writer.Written() {
+			c.Abort()
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"detail": "Bad Gateway"})
 		return
 	}
@@ -106,16 +110,50 @@ func (h *ProxyHandler) prepareGenericRequest(handler *services.BaseProxyHandler)
 	}
 
 	// 5. 处理请求头
-	headers := utils.FilterRequestHeaders(handler.C.Request.Header, []string{"x-proxy-key"})
+	// 移除所有可能承载代理密钥的头部，避免客户端的代理密钥泄漏到上游。
+	// LLM 适配器已经做了同样的处理 (authorization / x-api-key / ...), 通用路径必须对齐。
+	headersToRemove := []string{"x-proxy-key", "authorization", "x-api-key", "x-goog-api-key", "x-anthropic-api-key"}
+	if proxyConfig.APIKeyLocation != nil && strings.EqualFold(strings.TrimSpace(*proxyConfig.APIKeyLocation), "header") &&
+		proxyConfig.APIKeyName != nil && strings.TrimSpace(*proxyConfig.APIKeyName) != "" {
+		headersToRemove = append(headersToRemove, strings.TrimSpace(*proxyConfig.APIKeyName))
+	}
+	headers := utils.FilterRequestHeaders(handler.C.Request.Header, headersToRemove)
 
 	// 6. 处理查询参数
-	// 注意: 这里不再注入上游 Key。真实 Key 由 forwardRequest 在每次尝试前统一注入
-	// (见 services.InjectUpstreamKey), 这样 429 换 Key 重试时注入位置与首次请求完全一致。
+	// 剔除配置里声明的上游 Key 参数名，以及值恰好是代理密钥的参数
+	// (客户端可能把凭据放在 ?key= 或任意参数名里)，避免泄漏到上游。
+	// 真实的上游 Key 由 forwardRequest 统一注入。
+	globalProxyKeys := h.cfg.GetGlobalProxyKeys()
+	isProxyKey := func(v string) bool {
+		for _, k := range globalProxyKeys {
+			if k != "" && k == v {
+				return true
+			}
+		}
+		return false
+	}
 	params := make(map[string]string)
 	for key, values := range handler.C.Request.URL.Query() {
-		if len(values) > 0 {
-			params[key] = values[0]
+		if len(values) == 0 {
+			continue
 		}
+		// 剔除配置声明的上游 Key 参数名 (客户端可能塞了代理密钥)
+		if proxyConfig.APIKeyLocation != nil && strings.EqualFold(strings.TrimSpace(*proxyConfig.APIKeyLocation), "query") &&
+			proxyConfig.APIKeyName != nil && strings.EqualFold(key, strings.TrimSpace(*proxyConfig.APIKeyName)) {
+			continue
+		}
+		// 只剔除值确实是代理密钥的参数，避免误伤上游合法的同名参数
+		leakedProxyKey := false
+		for _, value := range values {
+			if isProxyKey(value) {
+				leakedProxyKey = true
+				break
+			}
+		}
+		if leakedProxyKey {
+			continue
+		}
+		params[key] = values[0]
 	}
 
 	// 7. 读取请求体
@@ -136,10 +174,7 @@ func (h *ProxyHandler) prepareGenericRequest(handler *services.BaseProxyHandler)
 // forwardRequest 转发请求到目标服务器
 // 上游返回 429/401/403 时自动换下一个 Key 重试，直到所有可用 Key 都试过一遍
 func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetRequest, proxyConfig *models.ProxyConfig) error {
-	client := &http.Client{}
-	if h.cfg.ProxyTimeout > 0 {
-		client.Timeout = time.Duration(h.cfg.ProxyTimeout) * time.Second
-	}
+	client := newUpstreamHTTPClient(h.cfg.ProxyTimeout)
 
 	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("Generic Proxy for '%s'", proxyConfig.Slug))
 
@@ -174,7 +209,13 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 
 		resp, err := h.doGenericUpstreamRequest(c, client, target)
 		if err != nil {
-			return err
+			logger.Errorf("Generic slug '%s': upstream request failed for key %s: %v",
+				proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue), err)
+			// 瞬时拨号/网络错误: 标记该 Key 已尝试并继续尝试下一个 Key
+			if !injectEnabled {
+				return err
+			}
+			continue
 		}
 
 		if !services.IsRetryableStatus(resp.StatusCode) {
@@ -346,18 +387,26 @@ func (h *ProxyHandler) writeGenericResponse(c *gin.Context, resp *http.Response)
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
 		// 流式响应
+		var streamErr error
 		c.Stream(func(w io.Writer) bool {
 			buffer := make([]byte, 1024)
 			n, err := resp.Body.Read(buffer)
+			if n > 0 {
+				if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
+					streamErr = writeErr
+					return false
+				}
+			}
 			if err != nil {
 				if err != io.EOF {
+					streamErr = err
 					logger.Errorf("Error reading stream: %v", err)
 				}
 				return false
 			}
-			_, err = w.Write(buffer[:n])
-			return err == nil
+			return true
 		})
+		return streamErr
 	} else {
 		// 普通响应
 		body, err := io.ReadAll(resp.Body)

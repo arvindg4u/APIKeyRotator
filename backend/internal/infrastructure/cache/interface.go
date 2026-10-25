@@ -2,8 +2,15 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrNotFound 表示缓存键不存在。
+//
+// 调用方必须能区分 "键不存在" 和 "缓存不可达"：前者是正常状态，
+// 后者需要告警并启用兜底逻辑，不能静默当成 "没有冷却记录"。
+var ErrNotFound = errors.New("key not found")
 
 // CacheInterface 缓存接口
 type CacheInterface interface {

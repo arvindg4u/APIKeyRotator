@@ -58,11 +58,11 @@ func (c *fakeCache) Get(ctx context.Context, key string) (string, error) {
 	}
 	item, ok := c.items[key]
 	if !ok {
-		return "", errors.New("key not found")
+		return "", cache.ErrNotFound
 	}
 	if !item.expiration.IsZero() && time.Now().After(item.expiration) {
 		delete(c.items, key)
-		return "", errors.New("key not found")
+		return "", cache.ErrNotFound
 	}
 	return fmt.Sprintf("%v", item.value), nil
 }
@@ -141,6 +141,7 @@ func testProxyConfig() *models.ProxyConfig {
 
 func testRotator(t *testing.T) (*KeyRotator, *fakeCache, *models.ProxyConfig) {
 	t.Helper()
+	t.Cleanup(resetFallbackCooldowns)
 	cacheClient := newFakeCache()
 	cfg := &config.Config{KeyCooldownSeconds: 60, KeyMaxCooldownSeconds: 1800}
 	return NewKeyRotator(cfg, cacheClient, "Test Rotator"), cacheClient, testProxyConfig()
@@ -260,6 +261,43 @@ func TestKeyRotatorSurvivesCacheOutage(t *testing.T) {
 	}
 }
 
+func TestCooldownSurvivesCacheOutage(t *testing.T) {
+	rotator, cacheClient, proxyConfig := testRotator(t)
+
+	// 缓存写失败不能静默关闭冷却: 刚 429 的 Key 必须仍然被降权。
+	cacheClient.err = errors.New("redis: connection refused")
+	rotator.MarkRateLimited(proxyConfig.ID, "key-1", 30*time.Second)
+
+	if remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1"); remaining <= 0 {
+		t.Fatal("cooldown was lost during a cache outage; the in-process fallback did not engage")
+	}
+
+	for i := 0; i < 20; i++ {
+		selected, err := rotator.Next(proxyConfig, nil)
+		if err != nil {
+			t.Fatalf("Next() error during cache outage: %v", err)
+		}
+		if selected.KeyValue == "key-1" {
+			t.Fatal("a key that returned 429 was selected again while the cache was down")
+		}
+	}
+}
+
+func TestClearCooldownClearsFallbackDuringCacheOutage(t *testing.T) {
+	rotator, cacheClient, proxyConfig := testRotator(t)
+
+	cacheClient.err = errors.New("redis: connection refused")
+	rotator.MarkRateLimited(proxyConfig.ID, "key-1", 30*time.Second)
+	if remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1"); remaining <= 0 {
+		t.Fatal("expected a cooldown before clearing it")
+	}
+
+	rotator.ClearCooldown(proxyConfig.ID, "key-1")
+	if remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1"); remaining != 0 {
+		t.Fatalf("cooldown = %s after ClearCooldown, want 0", remaining)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 冷却行为
 // ---------------------------------------------------------------------------
@@ -300,6 +338,7 @@ func TestMarkRateLimitedUsesDefaultWhenNoRetryAfter(t *testing.T) {
 }
 
 func TestMarkRateLimitedCapsRetryAfter(t *testing.T) {
+	t.Cleanup(resetFallbackCooldowns)
 	cacheClient := newFakeCache()
 	cfg := &config.Config{KeyCooldownSeconds: 60, KeyMaxCooldownSeconds: 120}
 	rotator := NewKeyRotator(cfg, cacheClient, "Test Rotator")
@@ -351,12 +390,12 @@ func TestShortestCooldown(t *testing.T) {
 
 func TestParseRetryAfter(t *testing.T) {
 	tests := []struct {
-		name           string
-		header         http.Header
-		body           []byte
-		want           time.Duration
-		wantMin        time.Duration
-		wantMax        time.Duration
+		name    string
+		header  http.Header
+		body    []byte
+		want    time.Duration
+		wantMin time.Duration
+		wantMax time.Duration
 	}{
 		{
 			name:   "retry-after in seconds",

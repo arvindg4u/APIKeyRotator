@@ -2,7 +2,10 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"api-key-rotator/backend/internal/infrastructure/cache"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -31,6 +34,9 @@ func (c *Cache) Set(ctx context.Context, key string, value interface{}, expirati
 // Get 获取键值
 func (c *Cache) Get(ctx context.Context, key string) (string, error) {
 	result, err := c.client.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", cache.ErrNotFound
+	}
 	if err != nil {
 		return "", err
 	}
