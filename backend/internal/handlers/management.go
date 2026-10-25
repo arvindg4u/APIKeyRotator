@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"api-key-rotator/backend/internal/auth"
 	"api-key-rotator/backend/internal/config"
 	"api-key-rotator/backend/internal/dto"
 	"api-key-rotator/backend/internal/infrastructure/database"
@@ -48,11 +49,19 @@ func (h *ManagementHandler) Login(c *gin.Context) {
 	adminUsername := h.cfg.AdminUsername
 	adminPassword := h.cfg.AdminPassword
 
-	if loginReq.Username == adminUsername && loginReq.Password == adminPassword {
-		// 简单的成功响应（实际生产中应该使用JWT）
+	// 定长比较, 避免按字节比较泄露密码前缀
+	if auth.ConstantTimeEquals(loginReq.Username, adminUsername) && auth.ConstantTimeEquals(loginReq.Password, adminPassword) {
+		// 签发会话令牌: 后面的管理接口都靠它鉴权
+		token, err := auth.GenerateToken(h.cfg.JWTSecret, adminUsername, auth.TokenTTL)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to issue token", "success": false})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"message": "Login successful",
-			"success": true,
+			"message":    "Login successful",
+			"success":    true,
+			"token":      token,
+			"expires_in": int(auth.TokenTTL.Seconds()),
 		})
 	} else {
 		c.JSON(http.StatusUnauthorized, gin.H{

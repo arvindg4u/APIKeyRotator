@@ -13,8 +13,8 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use(config => {
   const token = localStorage.getItem('authToken');
   if (token) {
-    // 未来使用JWT时，可以在这里添加 Authorization 头
-    // config.headers.Authorization = `Bearer ${token}`;
+    // 登录时签发的会话令牌, 管理接口靠它鉴权
+    config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 }, error => {
@@ -27,6 +27,14 @@ apiClient.interceptors.response.use(
   error => {
     // 在这里可以处理类似401未授权、403禁止访问等全局错误
     if (error.response) {
+      if (error.response.status === 401) {
+        // 令牌缺失或过期: 清掉本地令牌并回到登录页
+        localStorage.removeItem('authToken');
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+        return Promise.reject(error);
+      }
       // 例如，如果服务器返回了错误消息，则显示它
       ElMessage.error(error.response.data.message || '请求失败');
     } else {
