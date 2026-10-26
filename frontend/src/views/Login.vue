@@ -53,7 +53,8 @@ const handleLogin = async () => {
       try {
         const response = await login(loginForm.username, loginForm.password)
         if (response.data.success) {
-          localStorage.setItem('authToken', 'session-token')
+          // 保存登录时签发的会话令牌 (管理接口靠它鉴权)
+          localStorage.setItem('authToken', response.data.token || '')
           ElMessage.success(t('login.loginSuccess'))
           router.push({ name: 'Dashboard' })
         }

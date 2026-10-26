@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"api-key-rotator/backend/internal/infrastructure/cache"
 )
 
 // Cache 内存缓存实现
@@ -57,13 +59,13 @@ func (c *Cache) Get(ctx context.Context, key string) (string, error) {
 
 	item, exists := c.data[key]
 	if !exists {
-		return "", fmt.Errorf("key not found")
+		return "", cache.ErrNotFound
 	}
 
 	// 检查是否过期
 	if !item.expiration.IsZero() && time.Now().After(item.expiration) {
 		delete(c.data, key)
-		return "", fmt.Errorf("key not found")
+		return "", cache.ErrNotFound
 	}
 
 	if val, ok := item.value.(string); ok {

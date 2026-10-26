@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"net/url"
 	"strings"
 )
 
@@ -70,6 +71,22 @@ func FilterRequestHeaders(headers map[string][]string, headersToRemove []string)
 	}
 
 	return finalHeaders
+}
+
+// RedactSecrets removes every configured secret from a log string.
+// It also checks the URL-encoded form so a proxy key in a query string cannot
+// leak through Gin's access log.
+func RedactSecrets(text string, secrets []string) string {
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		text = strings.ReplaceAll(text, secret, "[REDACTED]")
+		if escaped := url.QueryEscape(secret); escaped != secret {
+			text = strings.ReplaceAll(text, escaped, "[REDACTED]")
+		}
+	}
+	return text
 }
 
 // FilterResponseHeaders 过滤响应头，移除不应该返回给客户端的头部

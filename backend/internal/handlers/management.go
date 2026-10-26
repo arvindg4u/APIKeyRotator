@@ -4,26 +4,31 @@ import (
 	"net/http"
 	"strconv"
 
+	"api-key-rotator/backend/internal/auth"
 	"api-key-rotator/backend/internal/config"
 	"api-key-rotator/backend/internal/dto"
+	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/infrastructure/database"
 	"api-key-rotator/backend/internal/logger"
 	"api-key-rotator/backend/internal/models"
+	"api-key-rotator/backend/internal/services"
 
 	"github.com/gin-gonic/gin"
 )
 
 // ManagementHandler 管理API处理器 - 使用接口抽象架构
 type ManagementHandler struct {
-	cfg    *config.Config
-	dbRepo database.Repository
+	cfg         *config.Config
+	dbRepo      database.Repository
+	cacheClient cache.CacheInterface
 }
 
 // NewManagementHandler 创建管理处理器实例
-func NewManagementHandler(cfg *config.Config, dbRepo database.Repository) *ManagementHandler {
+func NewManagementHandler(cfg *config.Config, dbRepo database.Repository, cacheClient cache.CacheInterface) *ManagementHandler {
 	return &ManagementHandler{
-		cfg:    cfg,
-		dbRepo: dbRepo,
+		cfg:         cfg,
+		dbRepo:      dbRepo,
+		cacheClient: cacheClient,
 	}
 }
 
@@ -48,11 +53,19 @@ func (h *ManagementHandler) Login(c *gin.Context) {
 	adminUsername := h.cfg.AdminUsername
 	adminPassword := h.cfg.AdminPassword
 
-	if loginReq.Username == adminUsername && loginReq.Password == adminPassword {
-		// 简单的成功响应（实际生产中应该使用JWT）
+	// 定长比较, 避免按字节比较泄露密码前缀
+	if auth.ConstantTimeEquals(loginReq.Username, adminUsername) && auth.ConstantTimeEquals(loginReq.Password, adminPassword) {
+		// 签发会话令牌: 后面的管理接口都靠它鉴权
+		token, err := auth.GenerateToken(h.cfg.JWTSecret, adminUsername, auth.TokenTTL)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to issue token", "success": false})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"message": "Login successful",
-			"success": true,
+			"message":    "Login successful",
+			"success":    true,
+			"token":      token,
+			"expires_in": int(auth.TokenTTL.Seconds()),
 		})
 	} else {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -327,6 +340,12 @@ func (h *ManagementHandler) UpdateAPIKeyStatus(c *gin.Context) {
 	if err := h.dbRepo.UpdateAPIKey(apiKey); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 重新启用 Key 时清除其冷却状态，避免继续被降权
+	if req.IsActive && h.cacheClient != nil {
+		rotator := services.NewKeyRotator(h.cfg, h.cacheClient, "Management")
+		rotator.ClearCooldown(int32(apiKey.ProxyConfigID), apiKey.KeyValue)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "API key status updated successfully"})
