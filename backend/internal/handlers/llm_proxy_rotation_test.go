@@ -121,20 +121,25 @@ func (f *rotationFixture) send() (*httptest.ResponseRecorder, []string) {
 }
 
 // TestLLMRotatesAwayFromExhaustedKey is the deterministic small case: key-1 is
-// exhausted and the request must move to key-2 instead of retrying key-1.
+// exhausted and the request must move to key-2 instead of retrying key-1. It
+// then makes key-2 fail too, to prove rotation is not a one-shot: the next
+// request must fall back to key-1 even though key-1 is still cooling.
 func TestLLMRotatesAwayFromExhaustedKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var mu sync.Mutex
 	var attempts []string
+	phase := 0 // 0: key-1 fails; 1: everything succeeds; 2: key-2 fails
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		mu.Lock()
 		attempts = append(attempts, key)
+		currentPhase := phase
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		if key == "key-1" {
+		fail := (currentPhase == 0 && key == "key-1") || (currentPhase == 2 && key == "key-2")
+		if fail {
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error":{"message":"quota exhausted"}}`))
 			return
@@ -218,15 +223,35 @@ func TestLLMRotatesAwayFromExhaustedKey(t *testing.T) {
 		t.Fatalf("key-2 succeeded but is cooling down for %s", remaining)
 	}
 
+	mu.Lock()
+	phase = 1
+	mu.Unlock()
+
 	second := send()
 	if second.Code != http.StatusOK {
 		t.Fatalf("second request status = %d, want 200 (body: %s)", second.Code, second.Body.String())
 	}
 	mu.Lock()
 	secondAttempts := append([]string(nil), attempts...)
+	attempts = nil
+	phase = 2
 	mu.Unlock()
 	if len(secondAttempts) != 1 || secondAttempts[0] != "key-2" {
 		t.Fatalf("second request attempts = %v, want [key-2]: the exhausted key must stay skipped", secondAttempts)
+	}
+
+	// key-2 now fails as well. Both keys are cooling, but a request must still
+	// rotate through them (key-1 is the sooner-recovering one) rather than give
+	// up after the first fallback failed.
+	third := send()
+	if third.Code != http.StatusOK {
+		t.Fatalf("third request status = %d, want 200 (body: %s)", third.Code, third.Body.String())
+	}
+	mu.Lock()
+	thirdAttempts := append([]string(nil), attempts...)
+	mu.Unlock()
+	if len(thirdAttempts) != 2 || thirdAttempts[0] != "key-2" || thirdAttempts[1] != "key-1" {
+		t.Fatalf("third request attempts = %v, want [key-2 key-1]: rotation must keep working after the fallback key fails", thirdAttempts)
 	}
 }
 
