@@ -21,7 +21,8 @@ import (
 // TestLLMStreamNotTruncatedByProxyTimeout is the regression test for H2:
 // PROXY_TIMEOUT used to be assigned to http.Client.Timeout, which is a total
 // deadline. A healthy SSE stream lasting longer than that was cut mid-flight.
-// It must only bound how long we wait for response headers.
+// It now bounds response headers and idle body reads; active streams may run
+// longer than the timeout as long as data keeps arriving.
 func TestLLMStreamNotTruncatedByProxyTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -38,12 +39,22 @@ func TestLLMStreamNotTruncatedByProxyTimeout(t *testing.T) {
 			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-1\"}}]}\n\n",
 			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-2\"}}]}\n\n",
 			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-3\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-4\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-5\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-6\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-7\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-8\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-9\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-10\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"chunk-11\"}}]}\n\n",
 			"data: [DONE]\n\n",
 		}
 		for i, chunk := range chunks {
 			if i > 0 {
-				// Total stream time is deliberately > the 1s PROXY_TIMEOUT.
-				time.Sleep(600 * time.Millisecond)
+				// Total stream time is deliberately > the 1s PROXY_TIMEOUT,
+				// while each individual pause stays well below it so the
+				// idle-body timeout does not cut a healthy stream.
+				time.Sleep(120 * time.Millisecond)
 			}
 			_, _ = io.WriteString(w, chunk)
 			if flusher != nil {
@@ -146,6 +157,101 @@ func (r *failingReader) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	return 0, r.err
+}
+
+func TestIdleTimeoutBodyAbortsStalledRead(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+
+	body := newIdleTimeoutBody(reader, 50*time.Millisecond)
+	defer body.Close()
+
+	start := time.Now()
+	_, err := body.Read(make([]byte, 1))
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrUpstreamBodyTimeout) {
+		t.Fatalf("Read() error = %v, want %v", err, ErrUpstreamBodyTimeout)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("Read() took %s, idle timeout should have fired after 50ms", elapsed)
+	}
+}
+
+// TestLLMProxyReturnsGatewayTimeoutOnStalledBody is the integration regression
+// for H2: the upstream sends headers and then stops producing body bytes. The
+// proxy must not hang forever; it returns 504 before writing a partial response.
+func TestLLMProxyReturnsGatewayTimeoutOnStalledBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	repo, err := sqlite.NewSQLiteRepository(t.TempDir() + "/stalled.db")
+	if err != nil {
+		t.Fatalf("sqlite repo: %v", err)
+	}
+	if err := repo.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	cfgRow := &models.ProxyConfig{
+		Name:          "stalled-test",
+		Slug:          "stalled-test",
+		ConfigType:    "LLM",
+		IsActive:      true,
+		TargetBaseURL: stringPtr(upstream.URL),
+		APIFormat:     stringPtr("openai_compatible"),
+		OutputFormat:  stringPtr("none"),
+	}
+	if err := repo.GetDB().Create(cfgRow).Error; err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := repo.GetDB().Create(&models.APIKey{
+		ProxyConfigID: cfgRow.ID,
+		KeyValue:      "upstream-key",
+		IsActive:      true,
+	}).Error; err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	handler := NewLLMProxyHandler(&config.Config{
+		GlobalProxyKeys:    "proxy-secret",
+		ProxyTimeout:       1,
+		KeyCooldownSeconds: config.DefaultKeyCooldownSeconds,
+		UpstreamUserAgent:  config.DefaultUpstreamUserAgent,
+		WAFRetryUserAgent:  config.DefaultWAFRetryUserAgent,
+		UpstreamWAFRetry:   false,
+	}, repo.GetDB(), memory.NewMemoryCache())
+
+	router := gin.New()
+	router.Any("/llm/:slug/*action", handler.HandleLLMProxy)
+
+	req := httptest.NewRequest(http.MethodPost, "/llm/stalled-test/v1/chat/completions",
+		strings.NewReader(`{"model":"test"}`))
+	req.Header.Set("Authorization", "Bearer proxy-secret")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	start := time.Now()
+	router.ServeHTTP(recorder, req)
+	elapsed := time.Since(start)
+
+	if recorder.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504 (body: %s)", recorder.Code, recorder.Body.String())
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("stalled body took %s to fail, want about 1s", elapsed)
+	}
 }
 
 func TestConvertedStreamPropagatesReadError(t *testing.T) {

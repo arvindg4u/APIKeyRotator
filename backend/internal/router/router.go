@@ -9,6 +9,7 @@ import (
 	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/infrastructure/database"
 	"api-key-rotator/backend/internal/middleware"
+	"api-key-rotator/backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,17 +22,18 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 	r := gin.New()
 
 	// 添加中间件
+	proxyKeys := cfg.GetGlobalProxyKeys()
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		return fmt.Sprintf("%s - [%s] \"%s %s %s %d %s \"%s\" %s\"\n",
 			param.ClientIP,
 			param.TimeStamp.Format("02/Jan/2006:15:04:05 -0700"),
 			param.Method,
-			param.Path,
+			utils.RedactSecrets(param.Path, proxyKeys),
 			param.Request.Proto,
 			param.StatusCode,
 			param.Latency,
 			param.Request.UserAgent(),
-			param.ErrorMessage,
+			utils.RedactSecrets(param.ErrorMessage, proxyKeys),
 		)
 	}))
 	r.Use(gin.Recovery())
@@ -39,7 +41,7 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 
 	// 添加全局请求调试中间件
 	r.Use(func(c *gin.Context) {
-		fmt.Printf("Global Request: %s %s\n", c.Request.Method, c.Request.URL.Path)
+		fmt.Printf("Global Request: %s %s\n", c.Request.Method, utils.RedactSecrets(c.Request.URL.Path, proxyKeys))
 		c.Next()
 	})
 
@@ -73,7 +75,7 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 			len(path) >= 7 && path[:7] == "/proxy" ||
 			len(path) >= 5 && path[:5] == "/llm" {
 			// API路径返回404
-			fmt.Printf("404 Not Found: %s %s\n", c.Request.Method, c.Request.URL.Path)
+			fmt.Printf("404 Not Found: %s %s\n", c.Request.Method, utils.RedactSecrets(c.Request.URL.Path, proxyKeys))
 			c.JSON(404, gin.H{"error": "Route not found"})
 		} else {
 			// 非API路径，返回前端index.html
@@ -91,7 +93,7 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 	{
 		// 添加路由级别的调试中间件
 		adminAPI.Use(func(c *gin.Context) {
-			fmt.Printf("Admin API Request: %s %s\n", c.Request.Method, c.Request.URL.Path)
+			fmt.Printf("Admin API Request: %s %s\n", c.Request.Method, utils.RedactSecrets(c.Request.URL.Path, proxyKeys))
 			c.Next()
 		})
 

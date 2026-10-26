@@ -69,6 +69,14 @@ func (h *LLMProxyHandler) HandleLLMProxy(c *gin.Context) {
 			c.Abort()
 			return
 		}
+		// Headers copied from the upstream response may still be buffered (for
+		// example Content-Encoding: gzip). They do not describe our JSON error.
+		c.Writer.Header().Del("Content-Encoding")
+		c.Writer.Header().Del("Content-Length")
+		if errors.Is(err, ErrUpstreamBodyTimeout) {
+			c.JSON(http.StatusGatewayTimeout, gin.H{"detail": "Gateway Timeout"})
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"detail": "Bad Gateway"})
 		return
 	}
@@ -178,6 +186,13 @@ func (h *LLMProxyHandler) prepareLLMRequest(c *gin.Context, slug, action string)
 // forwardLLMRequest 转发LLM请求到目标服务器，并应用响应格式转换
 // 上游返回 429/401/403 时自动换下一个 Key 重试，直到所有可用 Key 都试过一遍
 func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.TargetRequest, proxyConfig *models.ProxyConfig) error {
+	// Final credential scrub shared by all adapters. Keep this before
+	// ApplyUpstreamHeaders/InjectUpstreamKey so legitimate upstream headers
+	// added by the configuration are not removed.
+	if h.cfg != nil {
+		services.RedactTargetCredentials(target, h.cfg.GetGlobalProxyKeys())
+	}
+
 	// 获取格式配置，创建转换器 (与 Key 无关，只创建一次)
 	apiFormat := "openai_compatible"
 	if proxyConfig.APIFormat != nil {
@@ -216,6 +231,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 	// tried 记录本次请求已经用过的 Key，保证不会重复尝试同一个 Key
 	tried := make(map[string]bool)
 	var lastRetryable *services.BufferedResponse
+	var lastNetworkErr error
 
 	// wafRetried 记录是否已经用兜底 UA 重试过。
 	// WAF 拦截与 Key 无关，重试一次就够了，不应该把整个 Key 池都耗在同一个拦截上。
@@ -225,7 +241,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		selected, err := rotator.Next(proxyConfig, tried)
 		if err != nil {
 			if errors.Is(err, services.ErrNoAvailableKey) {
-				return h.writeExhaustedLLMResponse(c, rotator, proxyConfig, lastRetryable, converter, needConversion)
+				return h.writeExhaustedLLMResponse(c, rotator, proxyConfig, lastRetryable, lastNetworkErr, converter, needConversion)
 			}
 			return err
 		}
@@ -240,6 +256,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		if err != nil {
 			logger.Errorf("LLM slug '%s': upstream request failed for key %s: %v",
 				proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue), err)
+			lastNetworkErr = err
 			if !injectEnabled {
 				return err
 			}
@@ -252,8 +269,22 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 
 		// 可重试状态：先读完响应体并关闭连接（避免连接泄漏），再换下一个 Key 重试。
 		// 注意此时尚未向客户端写入任何内容，重试是安全的。
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, services.MaxBufferedErrorBody))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, services.MaxBufferedErrorBody))
 		resp.Body.Close()
+		if readErr != nil {
+			// A stalled/truncated error body is a gateway failure, not a valid
+			// retryable response. Do not cache partial bytes as the final body.
+			logger.Errorf("LLM slug '%s': failed to read upstream %d response body for key %s: %v",
+				proxyConfig.Slug, resp.StatusCode, utils.MaskAPIKeyDefault(selected.KeyValue), readErr)
+			lastNetworkErr = readErr
+			if resp.StatusCode == http.StatusTooManyRequests {
+				rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, 0)
+			}
+			if !injectEnabled {
+				return readErr
+			}
+			continue
+		}
 		lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -281,9 +312,15 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 					return h.writeLLMResponse(c, resp, converter, needConversion)
 				}
 
-				body, _ = io.ReadAll(io.LimitReader(resp.Body, services.MaxBufferedErrorBody))
+				body, readErr = io.ReadAll(io.LimitReader(resp.Body, services.MaxBufferedErrorBody))
 				resp.Body.Close()
+				if readErr != nil {
+					return fmt.Errorf("failed to read upstream %d response body: %w", resp.StatusCode, readErr)
+				}
 				lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
+				if resp.StatusCode == http.StatusTooManyRequests {
+					rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(resp.Header, body))
+				}
 			}
 		}
 
@@ -295,14 +332,20 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		}
 	}
 
-	return h.writeExhaustedLLMResponse(c, rotator, proxyConfig, lastRetryable, converter, needConversion)
+	return h.writeExhaustedLLMResponse(c, rotator, proxyConfig, lastRetryable, lastNetworkErr, converter, needConversion)
 }
 
 // writeExhaustedLLMResponse 在所有 Key 都试过之后写回响应：
-// 优先回写最后一次上游响应（保留真实错误信息），并带上 Retry-After 提示客户端何时重试
+// 优先回写最后一次上游响应（保留真实错误信息），并带上 Retry-After 提示客户端何时重试。
+// 如果没有任何上游响应、全部尝试都是网络错误，则返回 502（或超时 504），
+// 不能把它伪装成 "所有 Key 都被限流" 的 429。
 func (h *LLMProxyHandler) writeExhaustedLLMResponse(c *gin.Context, rotator *services.KeyRotator,
 	proxyConfig *models.ProxyConfig, lastRetryable *services.BufferedResponse,
-	converter *converters.Converter, needConversion bool) error {
+	lastNetworkErr error, converter *converters.Converter, needConversion bool) error {
+
+	if lastRetryable == nil && lastNetworkErr != nil {
+		return lastNetworkErr
+	}
 
 	if retryAfter := rotator.ShortestCooldown(proxyConfig); retryAfter > 0 {
 		c.Header("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
@@ -353,6 +396,12 @@ func (h *LLMProxyHandler) doUpstreamLLMRequest(client *http.Client, target *serv
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
+	timeoutSeconds := 0
+	if h.cfg != nil {
+		timeoutSeconds = h.cfg.ProxyTimeout
+	}
+	wrapUpstreamBody(resp, timeoutSeconds)
+
 	logger.Infof("Received response from target with status code: %d", resp.StatusCode)
 	return resp, nil
 }
@@ -364,14 +413,28 @@ func (h *LLMProxyHandler) writeLLMResponse(c *gin.Context, resp *http.Response, 
 	// 过滤响应头
 	filteredHeaders := utils.FilterResponseHeaders(resp.Header)
 
+	contentType := resp.Header.Get("Content-Type")
+	isStream := strings.Contains(contentType, "text/event-stream")
+	isGzip := strings.EqualFold(strings.TrimSpace(resp.Header.Get("Content-Encoding")), "gzip")
+
+	// We decompress non-stream gzip bodies below. Remove the encoding header
+	// before it is written so clients do not try to gunzip plain text. A gzip
+	// stream is passed through with its encoding header intact.
+	if isGzip && !isStream {
+		for key := range filteredHeaders {
+			if strings.EqualFold(key, "Content-Encoding") {
+				delete(filteredHeaders, key)
+			}
+		}
+	}
+
 	// 设置响应头
 	for key, value := range filteredHeaders {
 		c.Header(key, value)
 	}
 
 	// 检查是否为流式响应
-	contentType := resp.Header.Get("Content-Type")
-	if strings.Contains(contentType, "text/event-stream") {
+	if isStream {
 		// 流式响应处理
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -390,7 +453,7 @@ func (h *LLMProxyHandler) writeLLMResponse(c *gin.Context, resp *http.Response, 
 	var bodyReader io.Reader = resp.Body
 
 	// 检查是否是gzip压缩的响应
-	if resp.Header.Get("Content-Encoding") == "gzip" {
+	if isGzip {
 		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
 			return fmt.Errorf("failed to create gzip reader: %w", err)

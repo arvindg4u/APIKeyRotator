@@ -2,14 +2,15 @@ package services
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
-	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/config"
+	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -39,20 +40,50 @@ type BufferedResponse struct {
 }
 
 // HTTPResponse 把缓存的响应重新包装成 *http.Response, 以复用现有的写回逻辑。
-// 响应体已经被完整读出 (且 Go 的 transport 会透明解压 gzip), 因此长度/编码头不再有效。
+//
+// The response body has already been read completely. If it is still gzip
+// encoded (the transport only decompresses automatically when it added
+// Accept-Encoding itself), decompress it here and remove Content-Encoding.
+// If decompression fails, keep both the original body and the encoding header
+// so the client can decode it correctly instead of receiving gzip bytes that
+// are labelled as plain text.
 func (b *BufferedResponse) HTTPResponse() *http.Response {
 	var header http.Header
+	body := b.Body
 	if b.Header != nil {
 		header = b.Header.Clone()
-		header.Del("Content-Encoding")
 		header.Del("Content-Length")
+
+		if strings.EqualFold(strings.TrimSpace(header.Get("Content-Encoding")), "gzip") {
+			if decompressed, err := decompressGzip(b.Body); err == nil {
+				body = decompressed
+				header.Del("Content-Encoding")
+			}
+		}
 	}
 
 	return &http.Response{
 		StatusCode: b.StatusCode,
 		Header:     header,
-		Body:       io.NopCloser(bytes.NewReader(b.Body)),
+		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
+}
+
+func decompressGzip(body []byte) ([]byte, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	decompressed, err := io.ReadAll(io.LimitReader(reader, MaxBufferedErrorBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(decompressed) > MaxBufferedErrorBody {
+		return nil, fmt.Errorf("decompressed gzip response body exceeds %d bytes", MaxBufferedErrorBody)
+	}
+	return decompressed, nil
 }
 
 // BaseProxyHandler 代理处理器的抽象基类

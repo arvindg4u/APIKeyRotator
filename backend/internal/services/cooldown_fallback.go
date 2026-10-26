@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"api-key-rotator/backend/internal/config"
 	"api-key-rotator/backend/internal/logger"
 )
 
@@ -15,15 +16,32 @@ import (
 // retried. The fallback is deliberately an overlay, not a replacement: when
 // the cache recovers, its value and the local value are both honoured until
 // the later one expires.
+//
+// cleared is a tombstone overlay used when ClearCooldown could not delete the
+// shared cache entry. It must mask a stale cache value until the cache recovers
+// (or until the maximum possible cooldown expires), otherwise re-enabling a
+// key would leave it deprioritised by a value that was never deleted.
 var cooldownFallback = struct {
 	sync.Mutex
 	entries map[string]time.Time
-}{entries: make(map[string]time.Time)}
+	cleared map[string]time.Time
+}{
+	entries: make(map[string]time.Time),
+	cleared: make(map[string]time.Time),
+}
+
+// cooldownClearMarkerTTL is at least as long as any cooldown MarkRateLimited
+// can write (it clamps to DefaultMaxKeyCooldownSeconds). Keeping the tombstone
+// that long guarantees a stale cache entry cannot resurface after recovery.
+const cooldownClearMarkerTTL = time.Duration(config.DefaultMaxKeyCooldownSeconds) * time.Second
 
 func setFallbackCooldown(cacheKey string, expiresAt time.Time) {
 	cooldownFallback.Lock()
 	defer cooldownFallback.Unlock()
 	cooldownFallback.entries[cacheKey] = expiresAt
+	// A real 429 is newer than an earlier administrative clear. Remove the
+	// tombstone so the new cooldown is visible immediately.
+	delete(cooldownFallback.cleared, cacheKey)
 }
 
 func fallbackCooldownRemaining(cacheKey string) time.Duration {
@@ -42,10 +60,38 @@ func fallbackCooldownRemaining(cacheKey string) time.Duration {
 	return remaining
 }
 
-func clearFallbackCooldown(cacheKey string) {
+// beginClearCooldown atomically drops the in-process cooldown and installs a
+// tombstone before the cache delete is attempted. If the delete fails, the
+// tombstone remains and RemainingCooldown ignores the stale shared value.
+func beginClearCooldown(cacheKey string) {
 	cooldownFallback.Lock()
 	defer cooldownFallback.Unlock()
 	delete(cooldownFallback.entries, cacheKey)
+	cooldownFallback.cleared[cacheKey] = time.Now().Add(cooldownClearMarkerTTL)
+}
+
+// cancelClearCooldown removes the tombstone after a successful cache delete.
+// If a new 429 raced with the clear, setFallbackCooldown already removed it;
+// this call is then a no-op and the new cooldown stays visible.
+func cancelClearCooldown(cacheKey string) {
+	cooldownFallback.Lock()
+	defer cooldownFallback.Unlock()
+	delete(cooldownFallback.cleared, cacheKey)
+}
+
+func cooldownCleared(cacheKey string) bool {
+	cooldownFallback.Lock()
+	defer cooldownFallback.Unlock()
+
+	expiresAt, ok := cooldownFallback.cleared[cacheKey]
+	if !ok {
+		return false
+	}
+	if time.Now().Before(expiresAt) {
+		return true
+	}
+	delete(cooldownFallback.cleared, cacheKey)
+	return false
 }
 
 // resetFallbackCooldowns is used by tests to keep process-local state from
@@ -54,6 +100,7 @@ func resetFallbackCooldowns() {
 	cooldownFallback.Lock()
 	defer cooldownFallback.Unlock()
 	cooldownFallback.entries = make(map[string]time.Time)
+	cooldownFallback.cleared = make(map[string]time.Time)
 }
 
 const cacheFailureLogInterval = 30 * time.Second

@@ -80,6 +80,21 @@ func (a *OpenAIAdapter) ProcessRequest() (*services.TargetRequest, error) {
 		return nil, fmt.Errorf("invalid Proxy Key. Provide it via 'Authorization: Bearer <key>' header or 'api_key' in JSON body")
 	}
 
+	// Even when authentication came from the Authorization header, a body may
+	// still contain an api_key field. It is a client credential for the proxy,
+	// never an upstream request parameter, so remove it unconditionally.
+	if len(bodyBytes) > 0 {
+		var bodyJSON map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &bodyJSON); err == nil {
+			if _, exists := bodyJSON["api_key"]; exists {
+				delete(bodyJSON, "api_key")
+				if newBodyBytes, err := json.Marshal(bodyJSON); err == nil {
+					bodyBytes = newBodyBytes
+				}
+			}
+		}
+	}
+
 	// 2. 构建目标请求 (偷梁换柱)
 	// 注意: 这里不再注入上游 Key。真实 Key 由 forwardLLMRequest 在每次尝试前统一注入
 	// (见 services.InjectUpstreamKey), 这样 429 换 Key 重试时注入位置与首次请求完全一致。

@@ -99,7 +99,7 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `ADMIN_PASSWORD` | 管理员初始密码。 | `your_admin_password` | `mysecretpassword` |
 | `JWT_SECRET` | 用于生成JWT令牌的密钥。 | `your_very_secret...` | `a_long_random_string` |
 | `GLOBAL_PROXY_KEYS` | 全局代理密钥，用逗号分隔。 | (空) | `key1,key2` |
-| `PROXY_TIMEOUT` | 代理请求的超时时间（秒）。 | `30` | `60` |
+| `PROXY_TIMEOUT` | 上游响应头及响应体空闲超时（秒）。只要持续有数据到达，活跃的 SSE/LLM 流不会被截断。 | `30` | `60` |
 | `KEY_COOLDOWN_SECONDS` | 上游返回 429 后该 Key 的冷却时长（秒）。上游返回 Retry-After 时以其为准。设置为 `0` 可关闭冷却。 | `60` | `120` |
 | `KEY_MAX_COOLDOWN_SECONDS` | 单次冷却的上限（秒）。 | `1800` | `600` |
 | `UPSTREAM_USER_AGENT` | 客户端未携带 User-Agent 时转发给上游的 UA。Go 的默认 UA（`Go-http-client/1.1`）会被很多 WAF/CDN 拦截并返回 403，请求根本到不了模型。 | `Mozilla/5.0 (compatible; APIKeyRotator/1.0...)` | `curl/8.4.0` |

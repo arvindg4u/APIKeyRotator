@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -16,11 +17,15 @@ import (
 )
 
 type observedRequest struct {
-	auth   string
-	xpk    string
-	xapi   string
-	query  string
-	params url.Values
+	auth       string
+	xpk        string
+	xapi       string
+	proxyAuth  string
+	adminToken string
+	referer    string
+	custom     string
+	query      string
+	params     url.Values
 }
 
 func newCredentialTestRepo(t *testing.T) *sqlite.Repository {
@@ -58,11 +63,15 @@ func TestGenericProxyHeaderConfigDoesNotLeakClientCredentials(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seen = append(seen, observedRequest{
-			auth:   r.Header.Get("Authorization"),
-			xpk:    r.Header.Get("X-Proxy-Key"),
-			xapi:   r.Header.Get("X-Api-Key"),
-			query:  r.URL.RawQuery,
-			params: r.URL.Query(),
+			auth:       r.Header.Get("Authorization"),
+			xpk:        r.Header.Get("X-Proxy-Key"),
+			xapi:       r.Header.Get("X-Api-Key"),
+			proxyAuth:  r.Header.Get("Proxy-Authorization"),
+			adminToken: r.Header.Get("X-Admin-Token"),
+			referer:    r.Header.Get("Referer"),
+			custom:     r.Header.Get("X-Custom-Credential"),
+			query:      r.URL.RawQuery,
+			params:     r.URL.Query(),
 		})
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -98,9 +107,13 @@ func TestGenericProxyHeaderConfigDoesNotLeakClientCredentials(t *testing.T) {
 	router := gin.New()
 	router.Any("/proxy/*slug", handler.HandleGenericProxy)
 
-	req := httptest.NewRequest(http.MethodGet, "/proxy/header-probe/v1/resource?key=proxy-secret&token=legit", nil)
+	req := httptest.NewRequest(http.MethodGet, "/proxy/header-probe/v1/resource?key=proxy-secret&foo=proxy-secret&token=legit", nil)
 	req.Header.Set("X-Proxy-Key", "proxy-secret")
 	req.Header.Set("Authorization", "Bearer proxy-secret")
+	req.Header.Set("Proxy-Authorization", "Basic proxy-secret")
+	req.Header.Set("X-Admin-Token", "admin-token")
+	req.Header.Set("Referer", "https://client.example/?key=proxy-secret")
+	req.Header.Set("X-Custom-Credential", "Bearer proxy-secret")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
 
@@ -120,14 +133,26 @@ func TestGenericProxyHeaderConfigDoesNotLeakClientCredentials(t *testing.T) {
 	if last.xpk == "proxy-secret" {
 		t.Error("client proxy key leaked upstream as X-Proxy-Key")
 	}
-	if last.query == "key=proxy-secret" {
-		t.Error("client proxy key leaked upstream as ?key=")
+	if strings.Contains(last.query, "proxy-secret") {
+		t.Errorf("client proxy key leaked upstream in the query string: %q", last.query)
 	}
-	if last.params.Get("key") != "" {
+	if last.params.Get("key") != "" || last.params.Get("foo") != "" {
 		t.Errorf("proxy credential query parameter was forwarded: %v", last.params)
 	}
 	if last.params.Get("token") != "legit" {
 		t.Errorf("ordinary query parameter was lost: %v", last.params)
+	}
+	if last.proxyAuth != "" {
+		t.Errorf("Proxy-Authorization leaked upstream: %q", last.proxyAuth)
+	}
+	if last.adminToken != "" {
+		t.Errorf("X-Admin-Token leaked upstream: %q", last.adminToken)
+	}
+	if strings.Contains(last.referer, "proxy-secret") {
+		t.Errorf("Referer leaked the proxy key: %q", last.referer)
+	}
+	if strings.Contains(last.custom, "proxy-secret") {
+		t.Errorf("custom header leaked the proxy key: %q", last.custom)
 	}
 	if last.xapi != "sk-real-upstream-key" {
 		t.Errorf("upstream key not injected: X-Api-Key=%q, want %q", last.xapi, "sk-real-upstream-key")

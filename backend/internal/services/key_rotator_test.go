@@ -298,6 +298,35 @@ func TestClearCooldownClearsFallbackDuringCacheOutage(t *testing.T) {
 	}
 }
 
+// TestClearCooldownTombstoneSurvivesCacheRecovery covers H3: Del fails while
+// Redis is down, then Redis recovers with the old cooldown key still present.
+// The administrative clear must keep winning until the stale value is really
+// gone; otherwise re-enabling a key silently leaves it deprioritised.
+func TestClearCooldownTombstoneSurvivesCacheRecovery(t *testing.T) {
+	rotator, cacheClient, proxyConfig := testRotator(t)
+
+	rotator.MarkRateLimited(proxyConfig.ID, "key-1", 30*time.Second)
+	if remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1"); remaining <= 0 {
+		t.Fatal("expected a cooldown before clearing it")
+	}
+
+	// ClearCooldown's Del fails; the stale cache value remains behind.
+	cacheClient.err = errors.New("redis: connection refused")
+	rotator.ClearCooldown(proxyConfig.ID, "key-1")
+
+	// Cache "recovers" with the stale cooldown still present.
+	cacheClient.err = nil
+	if remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1"); remaining != 0 {
+		t.Fatalf("stale cooldown = %s after cache recovery, want 0", remaining)
+	}
+
+	// A new 429 after the clear is not suppressed by the tombstone.
+	rotator.MarkRateLimited(proxyConfig.ID, "key-1", 10*time.Second)
+	if remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1"); remaining <= 0 {
+		t.Fatal("a new 429 after ClearCooldown was masked by the clear tombstone")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 冷却行为
 // ---------------------------------------------------------------------------

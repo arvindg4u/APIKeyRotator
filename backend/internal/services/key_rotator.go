@@ -76,6 +76,12 @@ func (r *KeyRotator) RemainingCooldown(configID int32, keyValue string) time.Dur
 
 	cacheKey := r.cooldownCacheKey(configID, keyValue)
 
+	// An administrative clear must win over a stale shared-cache value until
+	// ClearCooldown can successfully delete it (or until the tombstone expires).
+	if cooldownCleared(cacheKey) {
+		return 0
+	}
+
 	// 进程内兜底值始终参与比较。缓存正常时它通常与缓存值相同；
 	// 缓存故障时它是唯一还能阻止 "刚 429 的 Key 立刻又被选中" 的状态。
 	remaining := fallbackCooldownRemaining(cacheKey)
@@ -144,10 +150,17 @@ func (r *KeyRotator) ClearCooldown(configID int32, keyValue string) {
 		return
 	}
 	cacheKey := r.cooldownCacheKey(configID, keyValue)
-	clearFallbackCooldown(cacheKey)
+
+	// Install the tombstone and drop the local cooldown atomically before the
+	// cache delete. If Del fails (cache outage), the tombstone masks the stale
+	// cache value when the cache comes back. If Del succeeds, cancel the
+	// tombstone; a concurrent new 429 removes it itself and remains visible.
+	beginClearCooldown(cacheKey)
 	if _, err := r.cacheClient.Del(context.Background(), cacheKey); err != nil {
 		warnCacheFailure(r.logPrefix, "cooldown delete", err)
+		return
 	}
+	cancelClearCooldown(cacheKey)
 }
 
 // ShortestCooldown 返回密钥池中最短的重试等待时间, 用于给客户端回 Retry-After。
