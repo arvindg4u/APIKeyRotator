@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -27,9 +28,21 @@ func newUpstreamHTTPClient(timeoutSeconds int) *http.Client {
 
 // wrapUpstreamBody applies the idle-body timeout to a network response.
 // BufferedResponse bodies are in-memory and are not wrapped.
+//
+// SSE/event-stream bodies are deliberately excluded: a model can legitimately
+// pause for longer than PROXY_TIMEOUT while thinking or waiting for a tool,
+// and closing the body mid-stream truncates a healthy response. Streams are
+// left to the upstream and to client disconnect detection.
 func wrapUpstreamBody(resp *http.Response, timeoutSeconds int) {
 	if resp == nil || resp.Body == nil || timeoutSeconds <= 0 {
 		return
 	}
+	if isEventStream(resp.Header.Get("Content-Type")) {
+		return
+	}
 	resp.Body = newIdleTimeoutBody(resp.Body, time.Duration(timeoutSeconds)*time.Second)
+}
+
+func isEventStream(contentType string) bool {
+	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
 }

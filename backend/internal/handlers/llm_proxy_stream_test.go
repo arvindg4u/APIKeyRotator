@@ -21,8 +21,8 @@ import (
 // TestLLMStreamNotTruncatedByProxyTimeout is the regression test for H2:
 // PROXY_TIMEOUT used to be assigned to http.Client.Timeout, which is a total
 // deadline. A healthy SSE stream lasting longer than that was cut mid-flight.
-// It now bounds response headers and idle body reads; active streams may run
-// longer than the timeout as long as data keeps arriving.
+// It now bounds response headers and non-stream body reads; SSE/event-stream
+// bodies are exempt from the idle-body timeout entirely.
 func TestLLMStreamNotTruncatedByProxyTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -134,6 +134,111 @@ func TestLLMStreamNotTruncatedByProxyTimeout(t *testing.T) {
 	for _, want := range []string{"chunk-1", "chunk-2", "chunk-3", "[DONE]"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("stream is missing %q; body may have been truncated: %q", want, body)
+		}
+	}
+}
+
+// TestLLMStreamSurvivesGapLongerThanProxyTimeout is the regression test for
+// the long-stream disconnect: an LLM can legitimately pause for more than
+// PROXY_TIMEOUT while thinking or waiting on a tool. The body idle timeout must
+// not close an SSE response in that case.
+func TestLLMStreamSurvivesGapLongerThanProxyTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		if flusher != nil {
+			// Send the response headers immediately; the long pause below is
+			// in the body, not in the header phase.
+			flusher.Flush()
+		}
+
+		// Both the first-token gap and the inter-chunk gap are longer than the
+		// 1s PROXY_TIMEOUT in this test.
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk-1\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk-2\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	repo, err := sqlite.NewSQLiteRepository(t.TempDir() + "/stream-gap.db")
+	if err != nil {
+		t.Fatalf("sqlite repo: %v", err)
+	}
+	if err := repo.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	cfgRow := &models.ProxyConfig{
+		Name:          "stream-gap-test",
+		Slug:          "stream-gap-test",
+		ConfigType:    "LLM",
+		IsActive:      true,
+		TargetBaseURL: stringPtr(upstream.URL + "/v1"),
+		APIFormat:     stringPtr("openai_compatible"),
+		OutputFormat:  stringPtr("none"),
+	}
+	if err := repo.GetDB().Create(cfgRow).Error; err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := repo.GetDB().Create(&models.APIKey{
+		ProxyConfigID: cfgRow.ID,
+		KeyValue:      "upstream-key",
+		IsActive:      true,
+	}).Error; err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	handler := NewLLMProxyHandler(&config.Config{
+		GlobalProxyKeys:    "proxy-secret",
+		ProxyTimeout:       1,
+		KeyCooldownSeconds: config.DefaultKeyCooldownSeconds,
+		UpstreamUserAgent:  config.DefaultUpstreamUserAgent,
+		WAFRetryUserAgent:  config.DefaultWAFRetryUserAgent,
+		UpstreamWAFRetry:   false,
+	}, repo.GetDB(), memory.NewMemoryCache())
+
+	router := gin.New()
+	router.Any("/llm/:slug/*action", handler.HandleLLMProxy)
+	proxyServer := httptest.NewServer(router)
+	defer proxyServer.Close()
+
+	req, err := http.NewRequest(http.MethodPost, proxyServer.URL+"/llm/stream-gap-test/v1/chat/completions",
+		strings.NewReader(`{"model":"test","stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer proxy-secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	body := string(bodyBytes)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, body)
+	}
+	for _, want := range []string{"chunk-1", "chunk-2", "[DONE]"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("stream is missing %q after a gap longer than PROXY_TIMEOUT; body may have been truncated: %q", want, body)
 		}
 	}
 }
