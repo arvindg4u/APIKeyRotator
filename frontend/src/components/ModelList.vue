@@ -17,12 +17,19 @@
       />
 
       <template v-else>
+        <el-input
+          v-if="models.length > 0"
+          v-model="searchQuery"
+          :placeholder="t('models.searchPlaceholder')"
+          :prefix-icon="Search"
+          clearable
+          class="models-search"
+        />
         <div class="models-hint">{{ t('models.clickHint') }}</div>
         <el-table
-          :data="models"
+          v-if="filteredModels.length > 0"
+          :data="filteredModels"
           class="models-table"
-          highlight-current-row
-          @row-click="handleCopy"
         >
           <el-table-column :label="t('models.table.model')">
             <template #default="scope">
@@ -41,7 +48,7 @@
           </el-table-column>
           <el-table-column :label="t('models.table.actions')" width="110">
             <template #default="scope">
-              <el-button size="small" type="primary" @click.stop="handleCopy(scope.row)">
+              <el-button size="small" type="primary" @click="handleCopy(scope.row)">
                 {{ t('models.copy') }}
               </el-button>
             </template>
@@ -49,8 +56,8 @@
         </el-table>
 
         <el-empty
-          v-if="!loading && models.length === 0"
-          :description="t('models.empty')"
+          v-if="!loading && filteredModels.length === 0"
+          :description="models.length === 0 ? t('models.empty') : t('models.noMatches')"
         />
       </template>
     </div>
@@ -64,9 +71,10 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { getModelsForConfig } from '../api'
 import { ElMessage } from 'element-plus'
+import { Search } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
@@ -83,12 +91,23 @@ const visible = ref(props.modelValue)
 const models = ref([])
 const loading = ref(false)
 const error = ref('')
+const searchQuery = ref('')
 
 // 上下文窗口缺失 (上游没返回该元数据) 时显示为空, 不猜测默认值
 const formatContextWindow = (value) => {
   if (value === null || value === undefined || value === '') return '—'
   return Number(value).toLocaleString()
 }
+
+// 输入时即时过滤, 同时匹配模型 ID 和展示名称。
+const filteredModels = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  if (!query) return models.value
+  return models.value.filter((model) => {
+    return (model.id || '').toLowerCase().includes(query) ||
+      (model.name || '').toLowerCase().includes(query)
+  })
+})
 
 const fetchModels = async () => {
   if (!props.configId || props.configId <= 0) {
@@ -97,6 +116,7 @@ const fetchModels = async () => {
   }
   loading.value = true
   error.value = ''
+  searchQuery.value = ''
   try {
     const response = await getModelsForConfig(props.configId)
     models.value = Array.isArray(response.data) ? response.data : []
@@ -172,6 +192,9 @@ const handleClose = () => {
 </script>
 
 <style scoped>
+.models-search {
+  margin-bottom: 12px;
+}
 .models-hint {
   color: #909399;
   font-size: 13px;
@@ -193,8 +216,17 @@ const handleClose = () => {
   font-size: 12px;
   word-break: break-all;
 }
+.models-table,
+.models-table :deep(.el-table__row),
+.models-table :deep(.el-table__cell),
+.models-table :deep(.el-button) {
+  -webkit-tap-highlight-color: transparent;
+}
 .models-table :deep(.el-table__row) {
-  cursor: pointer;
+  cursor: default;
+}
+.models-table :deep(.el-table__body tr:hover > td.el-table__cell) {
+  background-color: transparent;
 }
 .dialog-footer {
   display: flex;
