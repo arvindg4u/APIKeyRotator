@@ -2,7 +2,8 @@
   <el-dialog
     v-model="visible"
     :title="t('models.title', { name: configName })"
-    width="60%"
+    :width="dialogWidth"
+    :fullscreen="isMobile"
     class="responsive-dialog"
     @close="handleClose"
   >
@@ -26,8 +27,27 @@
           class="models-search"
         />
         <div class="models-hint">{{ t('models.clickHint') }}</div>
+
+        <div v-if="isMobile" class="model-cards">
+          <div v-for="model in filteredModels" :key="model.id" class="model-card">
+            <div class="model-card-main">
+              <div class="model-id">{{ model.id }}</div>
+              <div v-if="model.name && model.name !== model.id" class="model-name">
+                {{ model.name }}
+              </div>
+              <div class="model-context">
+                <span class="model-context-label">{{ t('models.table.contextWindow') }}:</span>
+                {{ formatContextWindow(model.context_window) }}
+              </div>
+            </div>
+            <el-button size="small" type="primary" @click="handleCopy(model)">
+              {{ t('models.copy') }}
+            </el-button>
+          </div>
+        </div>
+
         <el-table
-          v-if="filteredModels.length > 0"
+          v-else-if="filteredModels.length > 0"
           :data="filteredModels"
           class="models-table"
         >
@@ -41,12 +61,12 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column :label="t('models.table.contextWindow')" width="180">
+          <el-table-column :label="t('models.table.contextWindow')" :width="contextColumnWidth">
             <template #default="scope">
               <span>{{ formatContextWindow(scope.row.context_window) }}</span>
             </template>
           </el-table-column>
-          <el-table-column :label="t('models.table.actions')" width="110">
+          <el-table-column :label="t('models.table.actions')" :width="actionsColumnWidth">
             <template #default="scope">
               <el-button size="small" type="primary" @click="handleCopy(scope.row)">
                 {{ t('models.copy') }}
@@ -71,7 +91,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getModelsForConfig } from '../api'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
@@ -92,6 +112,24 @@ const models = ref([])
 const loading = ref(false)
 const error = ref('')
 const searchQuery = ref('')
+
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1280)
+const updateViewport = () => {
+  viewportWidth.value = window.innerWidth
+}
+onMounted(() => window.addEventListener('resize', updateViewport))
+onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
+
+const isMobile = computed(() => viewportWidth.value <= 768)
+const isTablet = computed(() => viewportWidth.value > 768 && viewportWidth.value <= 1024)
+const dialogWidth = computed(() => {
+  if (isMobile.value) return '96%'
+  if (isTablet.value) return '92%'
+  return '60%'
+})
+// The table is hidden on phones; these widths only affect tablet/desktop.
+const contextColumnWidth = computed(() => isTablet.value ? 130 : 180)
+const actionsColumnWidth = computed(() => isTablet.value ? 88 : 110)
 
 // 上下文窗口缺失 (上游没返回该元数据) 时显示为空, 不猜测默认值
 const formatContextWindow = (value) => {
@@ -216,6 +254,34 @@ const handleClose = () => {
   font-size: 12px;
   word-break: break-all;
 }
+.model-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.model-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+.model-card-main {
+  flex: 1;
+  min-width: 0;
+}
+.model-card .el-button {
+  flex: 0 0 auto;
+}
+.model-context {
+  color: #909399;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.model-context-label {
+  color: #606266;
+}
 .models-table,
 .models-table :deep(.el-table__row),
 .models-table :deep(.el-table__cell),
@@ -231,5 +297,23 @@ const handleClose = () => {
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
+}
+@media (max-width: 1024px) {
+  .models-table :deep(.el-table .cell) {
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+}
+@media (max-width: 768px) {
+  .models-search {
+    margin-bottom: 10px;
+  }
+  .models-hint {
+    font-size: 12px;
+    margin-bottom: 10px;
+  }
+  .model-card {
+    padding: 10px;
+  }
 }
 </style>
