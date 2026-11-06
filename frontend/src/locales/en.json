@@ -37,7 +37,8 @@
         "actions": {
             "copy": "Copy URL",
             "edit": "Edit",
-            "manageKeys": "Manage Keys"
+            "manageKeys": "Manage Keys",
+            "models": "Models"
         },
         "form": {
             "type": "Service Type",
@@ -101,6 +102,21 @@
             "copySuccess": "Copied: {url}",
             "copyFailed": "Copy failed, please check browser permissions or copy manually"
         }
+    },
+    "models": {
+        "title": "Models - {name}",
+        "table": {
+            "model": "Model",
+            "contextWindow": "Context Window",
+            "actions": "Copy"
+        },
+        "empty": "The provider returned no models",
+        "loadFailed": "Failed to load models from the provider",
+        "clickHint": "Click a model or the Copy button to copy its model ID",
+        "copy": "Copy",
+        "copySuccess": "Copied model ID: {model}",
+        "copyFailed": "Copy failed, please check browser permissions or copy manually",
+        "close": "Close"
     },
     "keyManager": {
         "title": "Manage Keys - {name}",

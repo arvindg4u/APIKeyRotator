@@ -1,0 +1,20 @@
+# Keep the build context small and platform-correct.
+# Without this, frontend/node_modules (glibc host deps) is copied over the
+# musl-native modules installed inside the Alpine build stage.
+
+# Version control / CI
+.git
+.github
+
+# Frontend dependencies and build output (rebuilt inside the image)
+frontend/node_modules
+frontend/dist
+
+# Backend build output
+backend/api-key-rotator
+
+# Local runtime data / SQLite files
+data
+*.db
+*.db-shm
+*.db-wal

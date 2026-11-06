@@ -112,6 +112,8 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 			adminProtected.PUT("/proxy-configs/:id", managementHandler.UpdateConfig)
 			adminProtected.PUT("/proxy-configs/:id/status", managementHandler.UpdateConfigStatus)
 			adminProtected.DELETE("/proxy-configs/:id", managementHandler.DeleteConfig)
+			// 从上游提供商拉取该 LLM 服务可用的模型清单
+			adminProtected.GET("/proxy-configs/:id/models", managementHandler.ListConfigModels)
 
 			// API密钥管理
 			adminProtected.GET("/proxy-configs/:id/keys", managementHandler.GetKeysForConfig)

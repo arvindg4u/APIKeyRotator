@@ -40,12 +40,13 @@
            </el-popconfirm>
          </template>
        </el-table-column>
-       <el-table-column :label="$t('dashboard.table.actions')" width="280">
+       <el-table-column :label="$t('dashboard.table.actions')" width="360">
          <template #default="scope">
           <div class="action-buttons-horizontal">
             <el-button size="small" type="primary" @click="handleCopy(scope.row)">{{ $t('dashboard.actions.copy') }}</el-button>
             <el-button size="small" @click="handleEdit(scope.row)">{{ $t('dashboard.actions.edit') }}</el-button>
             <el-button size="small" type="primary" @click="openKeyManager(scope.row)">{{ $t('dashboard.actions.manageKeys') }}</el-button>
+            <el-button v-if="scope.row.config_type === 'LLM'" size="small" @click="openModelList(scope.row)">{{ $t('dashboard.actions.models') }}</el-button>
            </div>
          </template>
        </el-table-column>
@@ -78,6 +79,7 @@
             <el-button size="small" type="primary" @click="handleCopy(config)">{{ $t('dashboard.actions.copy') }}</el-button>
             <el-button size="small" @click="handleEdit(config)">{{ $t('dashboard.actions.edit') }}</el-button>
             <el-button size="small" type="primary" @click="openKeyManager(config)">{{ $t('dashboard.actions.manageKeys') }}</el-button>
+            <el-button v-if="config.config_type === 'LLM'" size="small" @click="openModelList(config)">{{ $t('dashboard.actions.models') }}</el-button>
           </div>
         </div>
       </el-card>
@@ -188,6 +190,13 @@
       :config-name="selectedConfig.name"
     />
 
+    <ModelList
+      v-if="modelDialogVisible"
+      v-model="modelDialogVisible"
+      :config-id="selectedModelConfig.id"
+      :config-name="selectedModelConfig.name"
+    />
+
   </div>
 </template>
 
@@ -204,6 +213,7 @@ import {
 import { ElMessage } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import KeyManager from '../components/KeyManager.vue'
+import ModelList from '../components/ModelList.vue'
 
 const { t } = useI18n()
 
@@ -267,6 +277,14 @@ const selectedConfig = ref(null)
 const openKeyManager = (row) => {
   selectedConfig.value = row
   keyManagerVisible.value = true
+}
+
+const modelDialogVisible = ref(false)
+const selectedModelConfig = ref(null)
+
+const openModelList = (row) => {
+  selectedModelConfig.value = row
+  modelDialogVisible.value = true
 }
 
 // 用于存储从后端获取的公共配置

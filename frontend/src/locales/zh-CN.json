@@ -37,7 +37,8 @@
         "actions": {
             "copy": "复制地址",
             "edit": "编辑",
-            "manageKeys": "管理Key"
+            "manageKeys": "管理Key",
+            "models": "模型"
         },
         "form": {
             "type": "服务类型",
@@ -101,6 +102,21 @@
             "copySuccess": "已复制: {url}",
             "copyFailed": "复制失败，请检查浏览器权限或手动复制"
         }
+    },
+    "models": {
+        "title": "模型 - {name}",
+        "table": {
+            "model": "模型",
+            "contextWindow": "上下文窗口",
+            "actions": "复制"
+        },
+        "empty": "上游未返回任何模型",
+        "loadFailed": "从上游加载模型列表失败",
+        "clickHint": "点击模型或“复制”按钮即可复制模型 ID",
+        "copy": "复制",
+        "copySuccess": "已复制模型 ID: {model}",
+        "copyFailed": "复制失败,请检查浏览器权限或手动复制",
+        "close": "关闭"
     },
     "keyManager": {
         "title": "管理密钥 - {name}",

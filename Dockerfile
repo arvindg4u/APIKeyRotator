@@ -99,7 +99,7 @@ RUN chown -R apikeyrotator:apikeyrotator /app/data && \
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ./api-key-rotator --health-check || exit 1
+    CMD wget -qO- http://127.0.0.1:8000/health >/dev/null || exit 1
 
 # 设置入口脚本权限（entrypoint.sh 由仓库提供：
 # R2 未配置时与之前的行为一致，配置时则经 Litestream 启动）

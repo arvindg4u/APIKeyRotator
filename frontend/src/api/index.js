@@ -78,6 +78,11 @@ export const getKeysForConfig = (configId) => {
   return apiClient.get(`/proxy-configs/${configId}/keys`);
 }
 
+// 获取指定 LLM 配置在上游提供商处可用的模型列表
+export const getModelsForConfig = (configId) => {
+  return apiClient.get(`/proxy-configs/${configId}/models`);
+}
+
 // 为配置添加Key
 export const addApiKeyToConfig = (configId, keyData) => {
   return apiClient.post(`/proxy-configs/${configId}/keys`, keyData);
