@@ -16,6 +16,7 @@ import (
 	"api-key-rotator/backend/internal/adapters"
 	"api-key-rotator/backend/internal/config"
 	"api-key-rotator/backend/internal/converters"
+	"api-key-rotator/backend/internal/egress"
 	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/logger"
 	"api-key-rotator/backend/internal/models"
@@ -31,6 +32,7 @@ type LLMProxyHandler struct {
 	cfg         *config.Config
 	db          *gorm.DB
 	cacheClient cache.CacheInterface
+	egress      *egress.Manager
 }
 
 // NewLLMProxyHandler 创建LLM代理处理器实例
@@ -39,6 +41,7 @@ func NewLLMProxyHandler(cfg *config.Config, db *gorm.DB, cacheClient cache.Cache
 		cfg:         cfg,
 		db:          db,
 		cacheClient: cacheClient,
+		egress:      egress.New(cfg),
 	}
 }
 
@@ -216,8 +219,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		}
 	}
 
-	client := newUpstreamHTTPClient(h.cfg.ProxyTimeout)
-
+	// client is created per attempt below, after the egress endpoint is chosen.
 	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("LLM Proxy for '%s'", proxyConfig.Slug))
 
 	// 合并配置里的额外请求头 (例如自定义 User-Agent 绕过上游 WAF)，并保证带一个像样的 UA。
@@ -252,8 +254,12 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		logger.Infof("LLM slug '%s': using upstream key (masked): %s",
 			proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue))
 
+		ep := h.egress.Pick(egress.AffinityKey(proxyConfig.Slug, selected.KeyValue))
+		client := newUpstreamHTTPClient(h.cfg.ProxyTimeout, ep.ProxyURL())
+
 		resp, err := h.doUpstreamLLMRequest(client, target)
 		if err != nil {
+			h.egress.Report(ep, egress.OutcomeNetworkError)
 			logger.Errorf("LLM slug '%s': upstream request failed for key %s: %v",
 				proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue), err)
 			lastNetworkErr = err
@@ -262,6 +268,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 			}
 			continue
 		}
+		h.egress.Report(ep, egressOutcome(resp.StatusCode))
 
 		if !services.IsRetryableStatus(resp.StatusCode) {
 			return h.writeLLMResponse(c, resp, converter, needConversion)
@@ -306,8 +313,10 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 
 				resp, err = h.doUpstreamLLMRequest(client, target)
 				if err != nil {
+					h.egress.Report(ep, egress.OutcomeNetworkError)
 					return err
 				}
+				h.egress.Report(ep, egressOutcome(resp.StatusCode))
 				if !services.IsRetryableStatus(resp.StatusCode) {
 					return h.writeLLMResponse(c, resp, converter, needConversion)
 				}

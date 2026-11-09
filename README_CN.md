@@ -103,6 +103,11 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `JWT_SECRET` | 用于生成JWT令牌的密钥。 | `your_very_secret...` | `a_long_random_string` |
 | `GLOBAL_PROXY_KEYS` | 全局代理密钥，用逗号分隔。 | (空) | `key1,key2` |
 | `PROXY_TIMEOUT` | 上游响应头超时（秒）。非流式响应体空闲超过该时长也会被关闭；SSE/LLM 流式响应体不受此空闲超时限制。 | `30` | `60` |
+| `EGRESS_ENABLED` | 通过显式出口代理池转发上游请求,而不是直连。会忽略全局 `HTTP_PROXY`/`HTTPS_PROXY`。 | `false` | `true` |
+| `EGRESS_ENDPOINTS` | HTTP CONNECT 代理端点。支持 JSON 数组(`[{"id":"oci","url":"http://172.17.0.1:18160"}]`)或简写(`oci=http://172.17.0.1:18160,other=http://...`)。 | (空) | `http://172.17.0.1:18160` |
+| `EGRESS_STICKY_SECONDS` | 同一个 Key 保持同一个出口端点的时长。 | `900` | `1800` |
+| `EGRESS_COOLDOWN_SECONDS` | 出口端点网络错误或 403 后的基础冷却时间(每次失败翻倍,上限 1 小时)。 | `300` | `600` |
+| `EGRESS_COOLDOWN_ON_429` | 上游 429 时是否也冷却出口端点。通常关闭:429 一般是 Key/账号级别,不是 IP 级别。 | `false` | `true` |
 | `KEY_COOLDOWN_SECONDS` | 上游返回 429 后该 Key 的冷却时长（秒）。上游返回 Retry-After 时以其为准。设置为 `0` 可关闭冷却。 | `60` | `120` |
 | `KEY_MAX_COOLDOWN_SECONDS` | 单次冷却的上限（秒）。 | `1800` | `600` |
 | `UPSTREAM_USER_AGENT` | 客户端未携带 User-Agent 时转发给上游的 UA。Go 的默认 UA（`Go-http-client/1.1`）会被很多 WAF/CDN 拦截并返回 403，请求根本到不了模型。 | `Mozilla/5.0 (compatible; APIKeyRotator/1.0...)` | `curl/8.4.0` |

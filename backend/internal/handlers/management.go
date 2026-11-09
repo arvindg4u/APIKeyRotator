@@ -7,6 +7,7 @@ import (
 	"api-key-rotator/backend/internal/auth"
 	"api-key-rotator/backend/internal/config"
 	"api-key-rotator/backend/internal/dto"
+	"api-key-rotator/backend/internal/egress"
 	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/infrastructure/database"
 	"api-key-rotator/backend/internal/logger"
@@ -21,6 +22,7 @@ type ManagementHandler struct {
 	cfg         *config.Config
 	dbRepo      database.Repository
 	cacheClient cache.CacheInterface
+	egress      *egress.Manager
 }
 
 // NewManagementHandler 创建管理处理器实例
@@ -29,6 +31,7 @@ func NewManagementHandler(cfg *config.Config, dbRepo database.Repository, cacheC
 		cfg:         cfg,
 		dbRepo:      dbRepo,
 		cacheClient: cacheClient,
+		egress:      egress.New(cfg),
 	}
 }
 

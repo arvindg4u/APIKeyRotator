@@ -24,9 +24,9 @@ const (
 // Config 应用配置结构
 type Config struct {
 	// 数据库配置
-	DBType        string // "mysql" 或 "sqlite"
-	DatabaseURL   string // MySQL连接字符串
-	DatabasePath  string // SQLite文件路径
+	DBType       string // "mysql" 或 "sqlite"
+	DatabaseURL  string // MySQL连接字符串
+	DatabasePath string // SQLite文件路径
 
 	// 缓存配置
 	CacheType     string // "redis" 或 "memory"
@@ -66,6 +66,15 @@ type Config struct {
 
 	// 是否在命中 WAF 拦截页时用 WAFRetryUserAgent 重试一次。
 	UpstreamWAFRetry bool
+
+	// Egress (出站网络路径) 配置。
+	// EGRESS_ENDPOINTS 支持 JSON 数组或 "id=url,id2=url2" 简写。
+	// 每个 endpoint 是一个 HTTP CONNECT 代理 (例如 wireproxy)。
+	EgressEnabled         bool
+	EgressEndpoints       string
+	EgressStickySeconds   int
+	EgressCooldownSeconds int
+	EgressCooldownOn429   bool
 
 	// 日志配置
 	LogLevel string
@@ -125,6 +134,13 @@ func Load() *Config {
 		WAFRetryUserAgent: getWAFRetryUserAgent(),
 		UpstreamWAFRetry:  getUpstreamWAFRetry(),
 
+		// 出站网络路径 (可选): 显式代理池, 不再依赖全局 HTTP_PROXY。
+		EgressEnabled:         getEnvAsBool("EGRESS_ENABLED", false),
+		EgressEndpoints:       getEnv("EGRESS_ENDPOINTS", ""),
+		EgressStickySeconds:   getEnvAsInt("EGRESS_STICKY_SECONDS", 900),
+		EgressCooldownSeconds: getEnvAsInt("EGRESS_COOLDOWN_SECONDS", 300),
+		EgressCooldownOn429:   getEnvAsBool("EGRESS_COOLDOWN_ON_429", false),
+
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 	}
 
@@ -180,14 +196,14 @@ func buildDatabaseURL() string {
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
 		return databaseURL
 	}
-	
+
 	// 否则从分离的环境变量构建
 	dbHost := getEnv("DB_HOST", "localhost")
 	dbPort := getEnv("DB_PORT", "3306")
 	dbUser := getEnv("DB_USER", "root")
 	dbPassword := getEnv("DB_PASSWORD", "password")
 	dbName := getEnv("DB_NAME", "api_key_rotator")
-	
+
 	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		dbUser, dbPassword, dbHost, dbPort, dbName)
 }
@@ -210,6 +226,21 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// getEnvAsBool 解析布尔环境变量, 支持 true/1/yes/on 与 false/0/no/off。
+func getEnvAsBool(key string, defaultValue bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch value {
+	case "":
+		return defaultValue
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}
+
 // detectDatabaseType 自动检测数据库类型
 // 检测到MySQL相关环境变量则使用MySQL，否则默认使用SQLite
 func detectDatabaseType() string {
@@ -223,9 +254,9 @@ func detectDatabaseType() string {
 
 	// 检查MySQL特定的环境变量
 	if os.Getenv("DB_HOST") != "" ||
-	   os.Getenv("DB_USER") != "" ||
-	   os.Getenv("MYSQL_DB_HOST") != "" ||
-	   os.Getenv("MYSQL_HOST") != "" {
+		os.Getenv("DB_USER") != "" ||
+		os.Getenv("MYSQL_DB_HOST") != "" ||
+		os.Getenv("MYSQL_HOST") != "" {
 		return "mysql"
 	}
 
@@ -243,7 +274,7 @@ func detectCacheType() string {
 
 	// 检查Redis特定的环境变量
 	if os.Getenv("REDIS_HOST") != "" ||
-	   os.Getenv("REDIS_PORT") != "" {
+		os.Getenv("REDIS_PORT") != "" {
 		return "redis"
 	}
 

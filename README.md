@@ -104,6 +104,11 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `JWT_SECRET` | Secret key for JWT tokens. | `your_very_secret...` | `a_long_random_string` |
 | `GLOBAL_PROXY_KEYS` | Global proxy keys, comma-separated. | (empty) | `key1,key2` |
 | `PROXY_TIMEOUT` | Upstream response-header timeout in seconds. Non-stream response bodies are also closed if idle for this long; SSE/LLM stream bodies are exempt. | `30` | `60` |
+| `EGRESS_ENABLED` | Route upstream requests through an explicit egress proxy pool instead of connecting directly. A global `HTTP_PROXY`/`HTTPS_PROXY` is ignored. | `false` | `true` |
+| `EGRESS_ENDPOINTS` | HTTP CONNECT proxy endpoints. JSON array (`[{"id":"oci","url":"http://172.17.0.1:18160"}]`) or shorthand (`oci=http://172.17.0.1:18160,other=http://...`). | (empty) | `http://172.17.0.1:18160` |
+| `EGRESS_STICKY_SECONDS` | How long a key keeps the same egress endpoint before the selector may move it. | `900` | `1800` |
+| `EGRESS_COOLDOWN_SECONDS` | Base cooldown for an egress endpoint after a network error or 403 (doubles per failure, capped at 1h). | `300` | `600` |
+| `EGRESS_COOLDOWN_ON_429` | Also cool an egress endpoint on upstream 429s. Usually off: 429 is key/account scoped, not IP scoped. | `false` | `true` |
 | `KEY_COOLDOWN_SECONDS` | How long a key is deprioritized after the upstream returns 429. A `Retry-After` from the upstream wins over this. `0` disables cooldown. | `60` | `120` |
 | `KEY_MAX_COOLDOWN_SECONDS` | Upper bound for a single cooldown. | `1800` | `600` |
 | `UPSTREAM_USER_AGENT` | User-Agent sent upstream when the client does not send one. The Go default (`Go-http-client/1.1`) is blocked by many WAFs/CDNs with a 403 before the request reaches the model. | `Mozilla/5.0 (compatible; APIKeyRotator/1.0...)` | `curl/8.4.0` |

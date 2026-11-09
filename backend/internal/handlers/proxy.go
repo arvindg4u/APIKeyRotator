@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"api-key-rotator/backend/internal/config"
+	"api-key-rotator/backend/internal/egress"
 	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/logger"
 	"api-key-rotator/backend/internal/models"
@@ -27,6 +28,7 @@ type ProxyHandler struct {
 	cfg         *config.Config
 	db          *gorm.DB
 	cacheClient cache.CacheInterface
+	egress      *egress.Manager
 }
 
 // NewProxyHandler 创建通用代理处理器实例
@@ -35,6 +37,7 @@ func NewProxyHandler(cfg *config.Config, db *gorm.DB, cacheClient cache.CacheInt
 		cfg:         cfg,
 		db:          db,
 		cacheClient: cacheClient,
+		egress:      egress.New(cfg),
 	}
 }
 
@@ -189,7 +192,7 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 		services.RedactTargetCredentials(target, h.cfg.GetGlobalProxyKeys())
 	}
 
-	client := newUpstreamHTTPClient(h.cfg.ProxyTimeout)
+	// client is created per attempt below, after the egress endpoint is chosen.
 
 	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("Generic Proxy for '%s'", proxyConfig.Slug))
 
@@ -223,8 +226,12 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 		logger.Infof("Generic slug '%s': using upstream key (masked): %s",
 			proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue))
 
+		ep := h.egress.Pick(egress.AffinityKey(proxyConfig.Slug, selected.KeyValue))
+		client := newUpstreamHTTPClient(h.cfg.ProxyTimeout, ep.ProxyURL())
+
 		resp, err := h.doGenericUpstreamRequest(c, client, target)
 		if err != nil {
+			h.egress.Report(ep, egress.OutcomeNetworkError)
 			logger.Errorf("Generic slug '%s': upstream request failed for key %s: %v",
 				proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue), err)
 			lastNetworkErr = err
@@ -234,6 +241,7 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 			}
 			continue
 		}
+		h.egress.Report(ep, egressOutcome(resp.StatusCode))
 
 		if !services.IsRetryableStatus(resp.StatusCode) {
 			return h.writeGenericResponse(c, resp)
@@ -275,8 +283,10 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 
 				resp, err = h.doGenericUpstreamRequest(c, client, target)
 				if err != nil {
+					h.egress.Report(ep, egress.OutcomeNetworkError)
 					return err
 				}
+				h.egress.Report(ep, egressOutcome(resp.StatusCode))
 				if !services.IsRetryableStatus(resp.StatusCode) {
 					return h.writeGenericResponse(c, resp)
 				}

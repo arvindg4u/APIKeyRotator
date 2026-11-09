@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"api-key-rotator/backend/internal/egress"
 	"api-key-rotator/backend/internal/logger"
 	"api-key-rotator/backend/internal/models"
 	"api-key-rotator/backend/internal/services"
@@ -96,7 +97,6 @@ func (h *ManagementHandler) fetchUpstreamModels(proxyConfig *models.ProxyConfig)
 		return nil, fmt.Errorf("no API key injection location configured for this service")
 	}
 
-	client := newUpstreamHTTPClient(h.cfg.ProxyTimeout)
 	rotator := services.NewKeyRotator(h.cfg, h.cacheClient, fmt.Sprintf("Model list for '%s'", proxyConfig.Slug))
 
 	tried := make(map[string]bool)
@@ -114,13 +114,18 @@ func (h *ManagementHandler) fetchUpstreamModels(proxyConfig *models.ProxyConfig)
 
 		services.InjectUpstreamKey(target, proxyConfig, apiFormat, selected.KeyValue)
 
+		ep := h.egress.Pick(egress.AffinityKey(proxyConfig.Slug, selected.KeyValue))
+		client := newUpstreamHTTPClient(h.cfg.ProxyTimeout, ep.ProxyURL())
+
 		body, status, err := doUpstreamModelRequest(client, target, h.cfg.ProxyTimeout)
 		if err != nil {
+			h.egress.Report(ep, egress.OutcomeNetworkError)
 			logger.Warningf("Model list for '%s': request failed for key %s: %v",
 				proxyConfig.Slug, utils.MaskAPIKeyDefault(selected.KeyValue), err)
 			lastErr = err
 			continue
 		}
+		h.egress.Report(ep, egressOutcome(status))
 
 		if status >= 200 && status < 300 {
 			parsed, perr := parseModelsResponse(body)
