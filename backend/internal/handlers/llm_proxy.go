@@ -238,6 +238,8 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 	// wafRetried 记录是否已经用兜底 UA 重试过。
 	// WAF 拦截与 Key 无关，重试一次就够了，不应该把整个 Key 池都耗在同一个拦截上。
 	wafRetried := false
+	// freeFallbackTried 记录是否已经把 ":free" 模型名换成付费模型重试过。
+	freeFallbackTried := false
 
 	for {
 		selected, err := rotator.Next(proxyConfig, tried)
@@ -292,6 +294,26 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 			}
 			continue
 		}
+
+		// Token Harbor (and similar gateways) can exhaust an account's free
+		// allowance for ":free" models while the paid model is still usable.
+		// Key rotation cannot create free allowance, so optionally retry once
+		// with the ":free" suffix removed instead of returning the 429.
+		if resp.StatusCode == http.StatusTooManyRequests && h.cfg.FreeModelFallback && !freeFallbackTried {
+			if class, _ := services.ClassifyRateLimit(resp.Header, body); class == services.RateLimitFreeTierExhausted {
+				if newBody, newModel, ok := services.FreeModelFallbackBody(target.Body); ok {
+					logger.Warningf("LLM slug '%s': free allowance exhausted; retrying with paid model %s",
+						proxyConfig.Slug, newModel)
+					target.Body = newBody
+					freeFallbackTried = true
+					tried = make(map[string]bool)
+					lastRetryable = nil
+					lastNetworkErr = nil
+					continue
+				}
+			}
+		}
+
 		lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
 
 		if resp.StatusCode == http.StatusTooManyRequests {

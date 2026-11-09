@@ -112,6 +112,7 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `KEY_MAX_COOLDOWN_SECONDS` | 单次冷却的上限（秒）。 | `1800` | `600` |
 | `FREE_TIER_COOLDOWN_SECONDS` | 上游提示 Key 的免费模型额度用完、且正文里没有可解析的恢复时间时使用的兜底冷却(秒)。 | `43200` | `86400` |
 | `FREE_TIER_MAX_COOLDOWN_SECONDS` | 免费额度冷却的上限。免费额度通常按滚动 7 天窗口恢复。 | `604800` | `604800` |
+| `FREE_MODEL_FALLBACK` | 上游提示 `:free` 模型免费额度用完时,去掉模型名里的 `:free` 后缀并用付费线路重试一次(会消耗账号 plan/余额)。 | `false` | `true` |
 | `UPSTREAM_USER_AGENT` | 客户端未携带 User-Agent 时转发给上游的 UA。Go 的默认 UA（`Go-http-client/1.1`）会被很多 WAF/CDN 拦截并返回 403，请求根本到不了模型。 | `Mozilla/5.0 (compatible; APIKeyRotator/1.0...)` | `curl/8.4.0` |
 | `WAF_RETRY_USER_AGENT` | 上游返回 WAF/CDN 拦截页（403/401 且响应体不是 JSON）时，用这个 UA 把同一个 Key 再试一次。拦截是请求指纹（通常是客户端自己的 UA）的问题，换 Key 解决不了。置空则不做这次重试。 | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/125.0.0.0 Safari/537.36` | `curl/8.4.0` |
 | `UPSTREAM_WAF_RETRY` | 设为 `false` 可以完全关闭拦截页重试。 | `true` | `false` |

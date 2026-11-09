@@ -113,6 +113,7 @@ docker-compose -f docker-compose.enterprise.yml up -d
 | `KEY_MAX_COOLDOWN_SECONDS` | Upper bound for a single cooldown. | `1800` | `600` |
 | `FREE_TIER_COOLDOWN_SECONDS` | Fallback cooldown when an upstream says the key's free-model allowance is exhausted and no reset time can be parsed. | `43200` | `86400` |
 | `FREE_TIER_MAX_COOLDOWN_SECONDS` | Upper bound for a free-tier exhaustion cooldown. Free allowances usually reset on a rolling 7-day window. | `604800` | `604800` |
+| `FREE_MODEL_FALLBACK` | When the upstream says a `:free` model's allowance is exhausted, retry once with the `:free` suffix removed (uses the account plan/balance). | `false` | `true` |
 | `UPSTREAM_USER_AGENT` | User-Agent sent upstream when the client does not send one. The Go default (`Go-http-client/1.1`) is blocked by many WAFs/CDNs with a 403 before the request reaches the model. | `Mozilla/5.0 (compatible; APIKeyRotator/1.0...)` | `curl/8.4.0` |
 | `WAF_RETRY_USER_AGENT` | User-Agent used to retry the same key once when the upstream answers with a WAF/CDN block page (403/401 with a non-JSON body). The block is a request-fingerprint problem — usually the client's own User-Agent — so switching keys cannot fix it. Empty disables the retry. | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/125.0.0.0 Safari/537.36` | `curl/8.4.0` |
 | `UPSTREAM_WAF_RETRY` | Set to `false` to turn the block-page retry off entirely. | `true` | `false` |
