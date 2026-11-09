@@ -2,18 +2,26 @@ version: '3.8'
 
 services:
   # 主应用服务 - 轻量级版本 (SQLite + 内存缓存)
+  #
+  # DEVELOPMENT / LOCAL USE ONLY.
+  # This file must not replace the production container. Production is started
+  # by /home/ubuntu/.local/share/api-key-rotator/run-rotator.sh, which binds to
+  # 127.0.0.1:8020 and uses the real data directory and secrets.
   app:
     build:
       context: .
       dockerfile: Dockerfile  # 使用默认轻量级构建
-    container_name: api-key-rotator
+    # Avoid clobbering the production container named "api-key-rotator".
+    container_name: api-key-rotator-dev
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      # Loopback only. Never expose this dev instance directly to the network.
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     environment:
-      # 必需的安全配置
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - JWT_SECRET=${JWT_SECRET}
-      - GLOBAL_PROXY_KEYS=${GLOBAL_PROXY_KEYS}
+      # 必需的安全配置. Fail the compose command instead of silently falling
+      # back to the weak defaults when these are missing.
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - GLOBAL_PROXY_KEYS=${GLOBAL_PROXY_KEYS:?GLOBAL_PROXY_KEYS is required}
 
       # 轻量级服务配置
       - BACKEND_PORT=${BACKEND_PORT:-8000}
@@ -25,13 +33,11 @@ services:
       - DATABASE_PATH=${DATABASE_PATH:-/app/data/api_key_rotator.db}
     volumes:
       - ./data:/app/data
-      # 开发环境可选：挂载前端源代码用于热重载
-      - ./frontend:/app/frontend-source 2>/dev/null || true
     restart: unless-stopped
     networks:
       - api-key-rotator-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health", "||", "exit", "1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
