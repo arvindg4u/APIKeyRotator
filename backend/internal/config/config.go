@@ -67,11 +67,6 @@ type Config struct {
 	FreeTierCooldownSeconds    int
 	FreeTierMaxCooldownSeconds int
 
-	// FreeModelFallback 开启后, 当上游提示 :free 模型免费额度用完时,
-	// LLM 代理会把请求体里的模型名去掉 ":free" 后缀, 用付费线路再试一次。
-	// 这会消耗账号的 plan/余额, 默认关闭。
-	FreeModelFallback bool
-
 	// 上游请求的默认 User-Agent。
 	// 客户端没带 UA 时使用，避免发出 Go 默认的 "Go-http-client/1.1" 被 WAF/CDN 拦截。
 	UpstreamUserAgent string
@@ -145,7 +140,6 @@ func Load() *Config {
 
 		FreeTierCooldownSeconds:    getEnvAsInt("FREE_TIER_COOLDOWN_SECONDS", DefaultFreeTierCooldownSeconds),
 		FreeTierMaxCooldownSeconds: getEnvAsInt("FREE_TIER_MAX_COOLDOWN_SECONDS", DefaultFreeTierMaxCooldownSeconds),
-		FreeModelFallback:          getEnvAsBool("FREE_MODEL_FALLBACK", false),
 
 		// 客户端没带 User-Agent 时的兜底值
 		UpstreamUserAgent: getUpstreamUserAgent(),
