@@ -137,7 +137,7 @@ func (h *ManagementHandler) fetchUpstreamModels(proxyConfig *models.ProxyConfig)
 
 		if services.IsRetryableStatus(status) {
 			if status == http.StatusTooManyRequests {
-				rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(nil, body))
+				markUpstreamRateLimited(rotator, proxyConfig.ID, selected.KeyValue, nil, body)
 			}
 			lastErr = fmt.Errorf("upstream returned %d: %s", status, truncateForLog(body, 256))
 			logger.Warningf("Model list for '%s': upstream returned %d for key %s, trying next key",

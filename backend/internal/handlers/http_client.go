@@ -7,7 +7,20 @@ import (
 	"time"
 
 	"api-key-rotator/backend/internal/egress"
+	"api-key-rotator/backend/internal/services"
 )
+
+// markUpstreamRateLimited classifies a 429 and applies the correct cooldown.
+// Token Harbor (and likely other gateways) uses the same status for a
+// transient server_busy throttle and for a multi-day free_tier_limit_reached.
+func markUpstreamRateLimited(rotator *services.KeyRotator, configID int32, key string, header http.Header, body []byte) {
+	class, wait := services.ClassifyRateLimit(header, body)
+	if class == services.RateLimitFreeTierExhausted {
+		rotator.MarkFreeTierExhausted(configID, key, wait)
+		return
+	}
+	rotator.MarkRateLimited(configID, key, wait)
+}
 
 // egressOutcome maps an upstream status to an egress health signal.
 // A 429 is usually key/account scoped, not IP scoped, so it does not burn an

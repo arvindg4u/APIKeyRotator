@@ -19,6 +19,12 @@ const (
 	// DefaultWAFRetryUserAgent 命中 WAF 拦截页 (403/401 + 非 JSON) 时重试使用的 UA。
 	// 拦截是请求指纹 (通常是客户端 UA) 的问题，换 Key 没用，换成普通浏览器 UA 再试一次往往就通了。
 	DefaultWAFRetryUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+	// DefaultFreeTierCooldownSeconds 上游返回 free_tier_limit_reached 且正文里
+	// 没有可解析的恢复时间时使用的兜底冷却时长 (秒)。
+	DefaultFreeTierCooldownSeconds = 43200 // 12h
+	// DefaultFreeTierMaxCooldownSeconds 单次免费额度冷却的上限 (秒)。
+	// 免费额度按 7 天滚动窗口恢复, 所以允许冷却到 7 天。
+	DefaultFreeTierMaxCooldownSeconds = 604800 // 7 days
 )
 
 // Config 应用配置结构
@@ -55,6 +61,11 @@ type Config struct {
 	// 设置为 0 可以关闭冷却，退化为"每次请求纯轮询 + 失败即换下一个 Key"
 	KeyCooldownSeconds    int
 	KeyMaxCooldownSeconds int
+
+	// 免费额度 (free_tier_limit_reached) 的专用冷却。
+	// 免费额度按滚动 7 天窗口恢复, 用普通 429 冷却会导致 Key 过早被重试。
+	FreeTierCooldownSeconds    int
+	FreeTierMaxCooldownSeconds int
 
 	// 上游请求的默认 User-Agent。
 	// 客户端没带 UA 时使用，避免发出 Go 默认的 "Go-http-client/1.1" 被 WAF/CDN 拦截。
@@ -126,6 +137,9 @@ func Load() *Config {
 		// 上游限流 (429) 之后的 Key 冷却时长。上游给出 Retry-After 时以其为准。
 		KeyCooldownSeconds:    getEnvAsInt("KEY_COOLDOWN_SECONDS", DefaultKeyCooldownSeconds),
 		KeyMaxCooldownSeconds: getEnvAsInt("KEY_MAX_COOLDOWN_SECONDS", DefaultMaxKeyCooldownSeconds),
+
+		FreeTierCooldownSeconds:    getEnvAsInt("FREE_TIER_COOLDOWN_SECONDS", DefaultFreeTierCooldownSeconds),
+		FreeTierMaxCooldownSeconds: getEnvAsInt("FREE_TIER_MAX_COOLDOWN_SECONDS", DefaultFreeTierMaxCooldownSeconds),
 
 		// 客户端没带 User-Agent 时的兜底值
 		UpstreamUserAgent: getUpstreamUserAgent(),

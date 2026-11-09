@@ -327,6 +327,62 @@ func TestClearCooldownTombstoneSurvivesCacheRecovery(t *testing.T) {
 	}
 }
 
+func TestFreeTierCooldownExceedsNormalKeyCap(t *testing.T) {
+	t.Cleanup(resetFallbackCooldowns)
+	cacheClient := newFakeCache()
+	cfg := &config.Config{
+		KeyCooldownSeconds:         60,
+		KeyMaxCooldownSeconds:      1800,
+		FreeTierCooldownSeconds:    43200,
+		FreeTierMaxCooldownSeconds: 604800,
+	}
+	rotator := NewKeyRotator(cfg, cacheClient, "Test Rotator")
+	proxyConfig := testProxyConfig()
+
+	// The normal 429 cap is 30 minutes, but a free-tier exhaustion must be
+	// allowed to last until the rolling window resets.
+	rotator.MarkFreeTierExhausted(proxyConfig.ID, "key-1", 3*24*time.Hour)
+
+	remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1")
+	if remaining <= 30*time.Minute {
+		t.Fatalf("free-tier cooldown = %s, want more than the normal 30m cap", remaining)
+	}
+	if remaining > 3*24*time.Hour+time.Minute {
+		t.Fatalf("free-tier cooldown = %s, want ~3 days", remaining)
+	}
+
+	// The exhausted key must stay out of rotation while healthy keys exist.
+	for i := 0; i < 20; i++ {
+		selected, err := rotator.Next(proxyConfig, nil)
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if selected.KeyValue == "key-1" {
+			t.Fatal("a free-tier exhausted key was selected again")
+		}
+	}
+}
+
+func TestFreeTierCooldownFallsBackWhenNoResetTime(t *testing.T) {
+	t.Cleanup(resetFallbackCooldowns)
+	cacheClient := newFakeCache()
+	cfg := &config.Config{
+		KeyCooldownSeconds:         60,
+		KeyMaxCooldownSeconds:      1800,
+		FreeTierCooldownSeconds:    43200,
+		FreeTierMaxCooldownSeconds: 604800,
+	}
+	rotator := NewKeyRotator(cfg, cacheClient, "Test Rotator")
+	proxyConfig := testProxyConfig()
+
+	rotator.MarkFreeTierExhausted(proxyConfig.ID, "key-1", 0)
+
+	remaining := rotator.RemainingCooldown(proxyConfig.ID, "key-1")
+	if remaining < 11*time.Hour || remaining > 12*time.Hour+time.Minute {
+		t.Fatalf("fallback free-tier cooldown = %s, want ~12h", remaining)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 冷却行为
 // ---------------------------------------------------------------------------

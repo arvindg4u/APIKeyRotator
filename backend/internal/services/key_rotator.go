@@ -144,6 +144,37 @@ func (r *KeyRotator) MarkRateLimited(configID int32, keyValue string, retryAfter
 		r.logPrefix, utils.MaskAPIKeyDefault(keyValue), cooldown)
 }
 
+// MarkFreeTierExhausted marks a key as out of free-model allowance.
+// Unlike MarkRateLimited, this may be a multi-hour or multi-day cooldown:
+// the upstream tells us when the rolling free window resets and putting the
+// key back after 30 minutes just burns attempts on a known-dead key.
+func (r *KeyRotator) MarkFreeTierExhausted(configID int32, keyValue string, cooldown time.Duration) {
+	if !r.cooldownEnabled() {
+		return
+	}
+
+	if cooldown <= 0 {
+		cooldown = time.Duration(r.cfg.FreeTierCooldownSeconds) * time.Second
+	}
+	max := time.Duration(r.cfg.FreeTierMaxCooldownSeconds) * time.Second
+	if max <= 0 {
+		max = time.Duration(config.DefaultFreeTierMaxCooldownSeconds) * time.Second
+	}
+	if cooldown > max {
+		cooldown = max
+	}
+
+	cacheKey := r.cooldownCacheKey(configID, keyValue)
+	expiresAt := time.Now().Add(cooldown)
+	if err := r.cacheClient.Set(context.Background(), cacheKey, expiresAt.Unix(), cooldown); err != nil {
+		warnCacheFailure(r.logPrefix, "free-tier cooldown write", err)
+	}
+	setFallbackCooldown(cacheKey, expiresAt)
+
+	logger.Warningf("%s: key %s has no free-model allowance left; cooling for %s",
+		r.logPrefix, utils.MaskAPIKeyDefault(keyValue), cooldown)
+}
+
 // ClearCooldown 清除某个 Key 的冷却状态 (例如管理员在后台重新启用了这个 Key)
 func (r *KeyRotator) ClearCooldown(configID int32, keyValue string) {
 	if !r.cooldownEnabled() {

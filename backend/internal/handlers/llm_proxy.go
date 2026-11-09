@@ -297,7 +297,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 		if resp.StatusCode == http.StatusTooManyRequests {
 			// 429：让这个 Key 冷却一段时间，后续请求优先使用其它 Key。
 			// 上游给出 Retry-After 时按上游建议的时间冷却。
-			rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(resp.Header, body))
+			markUpstreamRateLimited(rotator, proxyConfig.ID, selected.KeyValue, resp.Header, body)
 		} else if services.LooksLikeBlockPage(resp.StatusCode, body) {
 			// 403/401 且响应体不是 JSON: 基本可以断定是 WAF/CDN 拦截 (请求指纹被拦),
 			// 不是 Key 的问题，换 Key 也解决不了 —— 用 extra_headers 设置 User-Agent
@@ -328,7 +328,7 @@ func (h *LLMProxyHandler) forwardLLMRequest(c *gin.Context, target *services.Tar
 				}
 				lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
 				if resp.StatusCode == http.StatusTooManyRequests {
-					rotator.MarkRateLimited(proxyConfig.ID, selected.KeyValue, services.ParseRetryAfter(resp.Header, body))
+					markUpstreamRateLimited(rotator, proxyConfig.ID, selected.KeyValue, resp.Header, body)
 				}
 			}
 		}
