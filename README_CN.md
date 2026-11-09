@@ -37,6 +37,9 @@
 
 #### 🏗️ Docker构建部署
 
+> **生产环境:** 不要在生产主机上使用下面的快速 `docker run` 示例。生产环境使用专用的 `run-rotator.sh`(仅监听回环地址、使用真实数据目录和真实 env 文件)。
+> 生产上线与轮换步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
 **轻量级版本（SQLite + 内存缓存）**
 ```bash
 # 构建轻量级镜像

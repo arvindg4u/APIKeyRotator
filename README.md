@@ -37,6 +37,10 @@ A lightweight API key management and rotation service designed to provide a simp
 
 #### 🏗️ Docker Build & Deployment
 
+> **Production:** do not use the quick-start `docker run` example below on the production host.
+> Production has a dedicated `run-rotator.sh` (loopback binding, real data dir, real env file).
+> Follow [DEPLOYMENT.md](DEPLOYMENT.md) for the production cutover and rotation procedure.
+
 **Lightweight Version (SQLite + Memory Cache)**
 ```bash
 # Build lightweight image

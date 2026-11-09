@@ -63,6 +63,7 @@ Entry: `backend/main.go` — `godotenv.Load` → `logger.Setup` → `config.Load
 
 ## Deployment gotchas
 
+- **Production is deployed and rotated only through `DEPLOYMENT.md`.** It uses `/home/ubuntu/.local/share/api-key-rotator/run-rotator.sh` (loopback `127.0.0.1:8020`, production data dir, `rotator.env`). Do not use the root dev compose file or an ad-hoc `docker run` to replace the production container.
 - `entrypoint.sh`: when `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` are set, runs under Litestream (SQLite → R2 replica, `sync-interval: 10s`); otherwise runs the binary directly. Render path uses `Dockerfile.render` + `render.yaml` blueprint (disk mount `/var/data`, `DATABASE_PATH=/var/data/api_key_rotator.db`).
 - **Never `touch` or bake an empty DB file into the image** — Litestream treats an existing empty file as real data, skips `restore-if-db-not-exists`, and replicates the empty DB over the R2 backup (2026-09-06 incident; see `entrypoint.sh` which deletes zero-byte DBs before restore).
 - **`JWT_SECRET`, `ADMIN_PASSWORD` and `GLOBAL_PROXY_KEYS` all fall back to well-known published defaults** (`your-secret-key`, `admin123`, `your-global-proxy-key`) when unset. That was low-stakes while `JWT_SECRET` was decorative, but it now signs the admin session tokens, and `ADMIN_PASSWORD`+`JWT_SECRET` together are a full admin compromise on any deployment that forgot them. Set all three explicitly; consider failing startup on defaults rather than warning.
