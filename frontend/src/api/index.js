@@ -127,3 +127,25 @@ export const batchImportApiKeys = (configId, data) => {
 export const clearAllApiKeys = (configId) => {
   return apiClient.delete(`/proxy-configs/${configId}/keys`);
 }
+
+// --- 状态页 API (运行时概览 / 流量 / 日志) ---
+
+// 运行时概览: 版本、运行时长、缓存类型、各配置的 Key 冷却情况
+export const getStatusOverview = () => {
+  return apiClient.get('/status/overview')
+}
+
+// 流量统计: 累计请求数、状态码分布、各服务聚合、最近 60 分钟每分钟请求数
+export const getStatusTraffic = () => {
+  return apiClient.get('/status/traffic')
+}
+
+// 最近的结构化事件 (请求/冷却)
+export const getStatusEvents = (limit = 200) => {
+  return apiClient.get('/status/events', { params: { limit } })
+}
+
+// 最近的应用日志行
+export const getStatusLogs = (limit = 200) => {
+  return apiClient.get('/status/logs', { params: { limit } })
+}

@@ -169,5 +169,75 @@
     },
     "langSwitcher": {
         "label": "Language"
+    },
+    "status": {
+        "title": "System Status",
+        "nav": {
+            "dashboard": "Services",
+            "status": "Status"
+        },
+        "refresh": "Auto refresh",
+        "refreshNow": "Refresh",
+        "connected": "Live",
+        "disconnected": "Reconnecting…",
+        "overview": "Overview",
+        "traffic": "Traffic",
+        "logs": "Live Logs",
+        "yes": "Yes",
+        "no": "No",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "field": {
+            "status": "Status",
+            "uptime": "Uptime",
+            "version": "Version",
+            "goVersion": "Go version",
+            "cache": "Cache",
+            "database": "Database",
+            "egress": "Egress",
+            "configs": "Services (active / total)",
+            "keys": "Keys (active / total)",
+            "coolingKeys": "Cooling keys",
+            "requests": "Requests (since start)"
+        },
+        "perConfig": {
+            "title": "Per-service status",
+            "name": "Service",
+            "slug": "Slug",
+            "type": "Type",
+            "active": "Active",
+            "keys": "Keys",
+            "activeKeys": "Active",
+            "coolingKeys": "Cooling"
+        },
+        "traffic": {
+            "requests": "Requests",
+            "rateLimited": "429 rate-limited",
+            "clientErrors": "4xx",
+            "serverErrors": "5xx",
+            "avgLatency": "Avg latency",
+            "rpm": "Requests per minute (last 60 min)",
+            "since": "Since {time}",
+            "perSlug": "Per-service traffic",
+            "slug": "Service",
+            "latency": "Avg latency (ms)"
+        },
+        "logs": {
+            "events": "Events",
+            "appLogs": "App logs",
+            "pause": "Pause",
+            "resume": "Resume",
+            "clear": "Clear",
+            "filter": "Filter…",
+            "all": "All levels",
+            "time": "Time",
+            "level": "Level",
+            "kind": "Kind",
+            "slug": "Service",
+            "status": "Status",
+            "latency": "Latency (ms)",
+            "message": "Message",
+            "empty": "No entries yet"
+        }
     }
 }

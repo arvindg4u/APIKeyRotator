@@ -269,7 +269,7 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			// 429：让这个 Key 冷却一段时间，后续请求优先使用其它 Key
-			markUpstreamRateLimited(rotator, proxyConfig.ID, selected.KeyValue, resp.Header, body)
+			markUpstreamRateLimited(rotator, proxyConfig.ID, proxyConfig.Slug, selected.KeyValue, resp.Header, body)
 		} else if services.LooksLikeBlockPage(resp.StatusCode, body) {
 			// 403/401 且响应体不是 JSON: 这是 WAF/CDN 拦截，不是 Key 的问题
 			logger.Errorf("Generic slug '%s': upstream returned %d with a non-JSON body, this looks like a WAF/CDN block rather than a bad key; set extra_headers (e.g. 'User-Agent: ...') for this config. Response: %s",
@@ -298,7 +298,7 @@ func (h *ProxyHandler) forwardRequest(c *gin.Context, target *services.TargetReq
 				}
 				lastRetryable = &services.BufferedResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}
 				if resp.StatusCode == http.StatusTooManyRequests {
-					markUpstreamRateLimited(rotator, proxyConfig.ID, selected.KeyValue, resp.Header, body)
+					markUpstreamRateLimited(rotator, proxyConfig.ID, proxyConfig.Slug, selected.KeyValue, resp.Header, body)
 				}
 			}
 		}

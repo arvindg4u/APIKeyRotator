@@ -9,6 +9,7 @@ import (
 	"api-key-rotator/backend/internal/infrastructure/cache"
 	"api-key-rotator/backend/internal/infrastructure/database"
 	"api-key-rotator/backend/internal/middleware"
+	"api-key-rotator/backend/internal/telemetry"
 	"api-key-rotator/backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -87,6 +88,7 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 	managementHandler := handlers.NewManagementHandler(cfg, dbRepo, cacheInterface)
 	proxyHandler := handlers.NewProxyHandler(cfg, dbRepo.GetDB(), cacheInterface)
 	llmProxyHandler := handlers.NewLLMProxyHandler(cfg, dbRepo.GetDB(), cacheInterface)
+	statusHandler := handlers.NewStatusHandler(cfg, dbRepo.GetDB(), cacheInterface, telemetry.Default())
 
 	// 管理API路由组 - 后台管理接口
 	adminAPI := r.Group("/admin")
@@ -122,15 +124,26 @@ func Setup(cfg *config.Config, dbRepo database.Repository, cacheInterface cache.
 			adminProtected.DELETE("/proxy-configs/:id/keys", managementHandler.ClearAllAPIKeys)
 			adminProtected.PATCH("/keys/:keyID", managementHandler.UpdateAPIKeyStatus)
 			adminProtected.DELETE("/keys/:keyID", managementHandler.DeleteAPIKey)
+
+			// 状态页: 运行时概览 / 流量统计 / 日志流 (SSE)
+			adminProtected.GET("/status/overview", statusHandler.Overview)
+			adminProtected.GET("/status/traffic", statusHandler.Traffic)
+			adminProtected.GET("/status/events", statusHandler.Events)
+			adminProtected.GET("/status/logs", statusHandler.Logs)
+			adminProtected.GET("/status/stream", statusHandler.Stream)
 		}
 	}
 
+	// 记录代理请求到内存遥测 (状态页数据源)。不挂在 /admin 上,
+	// 否则状态页自己的轮询会不断回灌统计数据。
+	telemetryMW := telemetry.Default().GinMiddleware()
+
 	// 通用代理路由组 - 公开API接口
-	proxyGroup := r.Group("/proxy")
+	proxyGroup := r.Group("/proxy", telemetryMW)
 	proxyGroup.Any("/*slug", proxyHandler.HandleGenericProxy)
 
 	// LLM代理路由组 - 公开API接口
-	llmGroup := r.Group("/llm")
+	llmGroup := r.Group("/llm", telemetryMW)
 	llmGroup.Any("/:slug/*action", llmProxyHandler.HandleLLMProxy)
 
 	return r

@@ -1,18 +1,22 @@
 package logger
 
 import (
+	"io"
 	"log"
 	"os"
+
+	"api-key-rotator/backend/internal/telemetry"
 )
 
 // Setup 配置日志记录器
 func Setup() {
 	// 设置日志输出格式，包含日期、时间、文件名和行号
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	
-	// 设置日志输出到标准输出
-	log.SetOutput(os.Stdout)
-	
+
+	// 日志同时写到标准输出和内存环形缓冲区:
+	// 后台状态页可以从缓冲区读取最近的应用日志 (读取时会再次脱敏)。
+	log.SetOutput(io.MultiWriter(os.Stdout, telemetry.Default().LogSink()))
+
 	log.Println("Logging configured successfully.")
 }
 
