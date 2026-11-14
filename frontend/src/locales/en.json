@@ -139,7 +139,7 @@
         "deleteConfirm": "Are you sure you want to delete this key?",
         "delete": "Delete",
         "table": {
-            "id": "ID",
+            "id": "#",
             "key": "API Key (Masked)",
             "status": "Status",
             "actions": "Actions"

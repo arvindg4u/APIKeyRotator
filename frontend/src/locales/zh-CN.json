@@ -139,7 +139,7 @@
         "deleteConfirm": "确定要删除这个Key吗?",
         "delete": "删除",
         "table": {
-            "id": "ID",
+            "id": "#",
             "key": "API Key (脱敏)",
             "status": "状态",
             "actions": "操作"

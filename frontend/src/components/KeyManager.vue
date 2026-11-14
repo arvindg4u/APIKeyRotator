@@ -45,7 +45,7 @@
 
     <!-- Key列表 -->
     <el-table :data="keys" v-loading="loading" class="desktop-table">
-      <el-table-column prop="id" :label="t('keyManager.table.id')" width="80" />
+      <el-table-column type="index" :label="t('keyManager.table.id')" width="80" />
       <el-table-column :label="t('keyManager.table.key')">
         <template #default="scope">
           <span>{{ maskApiKey(scope.row.key_value) }}</span>
@@ -72,8 +72,9 @@
 
     <!-- 移动端卡片布局 (≤768px 显示,桌面表格隐藏) -->
     <div v-loading="loading" class="mobile-cards">
-      <el-card v-for="key in keys" :key="key.id" class="key-card" shadow="hover">
+      <el-card v-for="(key, index) in keys" :key="key.id" class="key-card" shadow="hover">
         <div class="key-card-top">
+          <span class="key-card-index">#{{ index + 1 }}</span>
           <span class="key-card-value">{{ maskApiKey(key.key_value) }}</span>
           <el-switch
             :model-value="key.is_active"
@@ -380,9 +381,15 @@ const handleClose = () => {
     margin-bottom: 12px;
   }
   .key-card-value {
+    flex: 1 1 auto;
+    min-width: 0;
     font-family: monospace;
     font-size: 14px;
     word-break: break-all;
+  }
+  .key-card-index {
+    color: var(--el-text-color-secondary);
+    font-size: 13px;
   }
   .key-card-actions {
     display: flex;
