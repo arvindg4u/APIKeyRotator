@@ -193,3 +193,7 @@ cloudflare/node_modules/
 cloudflare/.wrangler/
 cloudflare/.dev.vars
 cloudflare/seed*.sql
+
+# Keep the Worker source lib/ (generic lib/ above must not hide it)
+!cloudflare/src/lib/
+!cloudflare/src/lib/**
