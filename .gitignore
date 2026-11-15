@@ -188,3 +188,8 @@ database.db
 .Trashes
 ehthumbs.db
 Thumbs.db
+# Cloudflare Worker deployment
+cloudflare/node_modules/
+cloudflare/.wrangler/
+cloudflare/.dev.vars
+cloudflare/seed*.sql

@@ -1,0 +1,34 @@
+{
+  // Free-plan Cloudflare Worker deployment.
+  //
+  // The admin UI is the existing Vue build in ../frontend/dist (relative to
+  // this config file). Only the API paths below run the Worker; everything
+  // else is served as a single-page application from the assets binding.
+  "name": "api-key-rotator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-15",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "../frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/admin/*", "/llm/*", "/proxy/*", "/health"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "apikeyrotator",
+      // Replace with the real id from: npx wrangler d1 create apikeyrotator
+      // (or from the Cloudflare dashboard / API). Local dev ignores it.
+      "database_id": "23d98c96-5029-4ee4-9557-1a2c16421e8c",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "ROTATOR", "class_name": "Rotator" }]
+  },
+  // Declarative DO lifecycle (replaces the legacy `migrations` array).
+  "exports": {
+    "Rotator": { "type": "durable-object", "storage": "sqlite" }
+  }
+}
