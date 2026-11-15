@@ -47,25 +47,31 @@ npx wrangler deploy
 
 The Worker is served at `https://<name>.<your-subdomain>.workers.dev`.
 
-## Auto-deploy on push (Workers Builds)
+## Auto-deploy on push
 
-The Worker project is already connected to this GitHub repository. In
-**Workers & Pages → api-key-rotator → Settings → Builds**, set:
+Auto-deploy runs through **GitHub Actions** (`.github/workflows/deploy-worker.yml`),
+not Cloudflare Workers Builds: the account API token does not carry the
+`workers-ci.write` permission the Builds API requires. On a push to `master`
+touching `cloudflare/**` or `frontend/**` the workflow builds the admin UI,
+applies D1 migrations, and runs `wrangler deploy`.
+
+Repo secrets required: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
+
+To switch to Cloudflare's native Workers Builds instead, create an account API
+token with **Workers CI: Edit**, then connect the repo in
+**Workers & Pages → api-key-rotator → Settings → Builds** with:
 
 | Setting | Value |
 |---|---|
 | Branch | `master` |
-| Root directory | *(repository root)* |
+| Root directory | repository root |
 | Build command | `cd frontend && npm install && npm run build` |
 | Deploy command | `npx wrangler d1 migrations apply DB --remote && npx wrangler deploy --config cloudflare/wrangler.jsonc` |
 | Watch paths | `cloudflare/**`, `frontend/**` |
 
-`assets.directory` is `../frontend/dist` relative to `wrangler.jsonc`, so the deploy
-command must run from the repository root (or keep the root directory blank and let
-Workers Builds run commands there).
-
-Secrets are configured once in **Settings → Variables and Secrets** (or via
-`wrangler secret put`); they survive deploys.
+Runtime secrets (`ADMIN_USERNAME`, `ADMIN_PASSWORD`, `JWT_SECRET`,
+`GLOBAL_PROXY_KEYS`) are set once via `wrangler secret put` or the dashboard and
+survive deploys.
 
 ## Importing existing configs and keys
 
