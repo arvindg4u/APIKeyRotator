@@ -8,6 +8,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-15",
   "observability": { "enabled": true },
+  "vars": {
+    "PROXY_PUBLIC_BASE_URL": "https://api-key-rotator.rvndkaswan.workers.dev"
+  },
   "assets": {
     "directory": "../frontend/dist",
     "binding": "ASSETS",
