@@ -1,20 +1,12 @@
 name: Deploy Worker
 
-# Auto-deploy the Cloudflare Worker on push.
+# Manual fallback only.
 #
-# The Workers Builds API requires the `workers-ci.write` permission, which the
-# repository's CLOUDFLARE_API_TOKEN does not have. This workflow deploys with
-# the same account token via Wrangler instead, so pushes to master still ship
-# automatically. Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID as repo
-# secrets (already configured).
+# Push-to-deploy is handled by Cloudflare Workers Builds (trigger on master).
+# This workflow is kept for on-demand deploys from the Actions tab and uses the
+# CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID repo secrets.
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - 'cloudflare/**'
-      - 'frontend/**'
-      - '.github/workflows/deploy-worker.yml'
   workflow_dispatch:
 
 permissions:
